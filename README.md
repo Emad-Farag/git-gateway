@@ -1,51 +1,90 @@
 # Git Gateway
 
-A small web application (English GUI) that installs on the server and turns the
-manual, error-prone procedure described in `git.txt` into an automatic,
-center-controlled system for **several developers working on the same server and
-the same applications**.
+A small web application (English GUI) that installs on the server and turns
+multi-developer git access on shared Linux servers into an automatic,
+center-controlled system: **several developers working on the same server and
+the same applications**, with every commit linked to a verified SSH identity.
 
-## Accounts & roles (panel login)
+## Complete feature list
 
-The GUI has its own user system (stored salted+sha256 in `~/.gitgateway/users.json`):
+### Applications
+- Automatic discovery of every git repository under the configured scan roots
+  (default `~/frappe-bench/apps`); manual *Rescan applications* button anytime.
+- Per-application page with: current branch, remote(s), ahead/behind counters,
+  working-tree status, number of unsaved files.
+- One-click quick actions: Write hook + allowlist, Remove hook, Status, Pull,
+  Push, Stage all.
 
-| Role | Can do |
-|---|---|
-| **admin** | Everything: permissions, hooks, users & keys, settings, service restart, all 20 git commands, manage accounts |
-| **viewer** | Read-only: browse applications, commit history, status + safe commands (`status`, `log`, `blame`, `diff`, `show`, `branch`, `describe`, `tag`). Dangerous commands, permissions and settings are refused |
+### SSH identity & authorization
+- Reads developer e-mails directly from `~/.ssh/authorized_keys` key comments
+  (or `environment="GIT_AUTHOR_EMAIL=..."` options) — no manual user lists.
+- **SSH key manager built into the GUI**: add/remove public keys in
+  `authorized_keys` with validation — no shell required. Steps to generate a
+  key on Windows, Linux and macOS are included in the panel.
+- Per-repository access matrix: tick which e-mail may commit to which
+  application, save, hooks update instantly.
+- A user with no permissions anywhere has **every commit rejected**.
 
-- The **first admin account** is created on the very first visit (username + password).
-- Admins manage accounts in **Users & Keys → GUI accounts**: add, delete,
-  reset password, change role. You cannot delete yourself or the last admin.
-- Accounts created on old versions (single password in config.json) are
-  migrated automatically into an `admin` account.
-- Every user changes their own password in **Settings → Change admin password**
-  (it changes *your own* account's password).
+### Automatic enforcement (pre-commit hooks)
+- A generated `pre-commit` hook is installed on every configured repository:
+  - rejects the commit when the detected e-mail is not on the repository
+    allowlist,
+  - rejects commits with no verified identity (no SSH key matched),
+  - always re-stamps author/committer with the verified e-mail — a commit
+    cannot be forged with someone else's name.
+- An SSH-identity helper (`identify.sh`) is installed into `~/.bashrc`
+  (managed `# >>> git-gateway <<<` block). At login it matches the actual
+  SSH-agent key fingerprint against `authorized_keys` and exports the correct
+  `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables.
+- Hooks are re-synced automatically whenever permissions change; broken or
+  empty hook files are detected and repaired by the *Write hook* button.
+- Foreign (non-Gateway) hooks in any repository are left untouched and shown
+  with a "Custom hook" badge.
 
-## What it does
+### Commit history
+- Per application (and a global feed on the dashboard): hash (hover shows the
+  full hash), message, author, e-mail, date-time, relative time.
+- Badges: green e-mail = currently authorized in this repository; orange =
+  committed before being removed from the allowlist.
 
-| Manual workflow (git.txt) | Git Gateway |
-|---|---|
-| Edit `~/.bashrc` by hand to detect the SSH key e-mail, then fix e-mails list in every `.git/hooks/pre-commit` | One "Install" button writes both automatically and keeps them in sync |
-| Allowed e-mails hard-coded inside every hook | One central **Permissions matrix** — tick a user against an application, save, hooks update instantly |
-| Look at commits with `git log` in a terminal | **Commit history tab** per application (and a global feed): who, e-mail, when, message |
-| Run git commands over SSH session by session | **Git command runner** in the GUI: status / add / commit / pull / push / branch / checkout / merge / stash / tag… |
-| New developers need manual steps | New keys in `~/.ssh/authorized_keys` are detected automatically on rescan |
+### Git command runner (GUI, English)
+- 20 git commands from the browser: status, log, blame, diff, show, add,
+  commit, restore, stash, branch, switch, checkout, merge, rebase,
+  cherry-pick, tag, describe, fetch, pull, push.
+- Dangerous commands (pull, push, checkout, merge, rebase, cherry-pick,
+  restore, stash) require the confirm checkbox.
+- Argument validation blocks remote URLs, `git config`, `-c` and pack-program
+  switches (`--upload-pack` etc.).
+- Output is shown full-width with automatic jump to the result.
 
-## How enforcement works
+### Accounts & roles (panel login)
+- Login with **username + password**; roles:
+  - **admin** — everything: permissions, hooks, users & keys, settings,
+    service restart, all git commands, account management;
+  - **viewer** — read-only: browse applications and commit history, safe
+    commands only (`status`, `log`, `blame`, `diff`, `show`, `branch`,
+    `describe`, `tag`). Write commands, permissions and settings are refused.
+- First visit creates the first admin account (setup screen).
+- Account management: add, delete, reset password, role select — you cannot
+  delete yourself or the last admin.
+- Passwords stored salted + SHA-256 in `~/.gitgateway/users.json`; every user
+  changes their own password in Settings.
+- Accounts from old single-password versions migrate automatically into an
+  `admin` account.
 
-1. When a developer opens an SSH session, an installed helper script
-   (`~/.gitgateway/identify.sh`) matches **his SSH-agent key fingerprint**
-   against `~/.ssh/authorized_keys`, takes the e-mail from that key's comment,
-   and exports `GIT_AUTHOR_EMAIL/NAME` + `GIT_COMMITTER_EMAIL/NAME` — so every
-   commit is automatically stamped with *his* identity.
-2. Every configured repository gets a generated `pre-commit` hook that:
-   * rejects the commit if the detected e-mail is **not** on the repository's
-     allowlist (maintained via the GUI),
-   * rejects commits with **no verified identity** (e.g. someone connected
-     without their key),
-   * always re-stamps the author/committer with the verified e-mail, so a
-     commit cannot be forged with someone else's name.
+### Keys & panel security
+- All forms are CSRF-protected; Flash messages confirm every action.
+- `authorized_keys` changes keep a backup copy (`authorized_keys.ggw-bak`).
+- Removing a hook only removes hooks written by Git Gateway — a real custom
+  hook is never deleted silently.
+
+### Web service
+- Runs as **`git-gateway.service`** (systemd): always running, starts on
+  boot, auto-restarts on failure.
+- Port selectable at install (`bash install.sh <port>`), changeable later in
+  Settings with a *Restart service* button (passwordless sudoers rule limited
+  to this one service).
+- Fully mobile-responsive layout (top-bar navigation, stacked cards).
 
 ## Install (on the Linux server)
 
@@ -65,60 +104,34 @@ The installer:
    **"Restart service"** button in the GUI work without a password,
 5. starts the service and prints the URL: `http://<server-ip>:<port>`.
 
-- **First visit** asks you to create the admin password (stored salted+sha256 in `~/.gitgateway/config.json`).
-- If Flask is missing: `sudo apt install python3-flask` (or let the installer create a venv).
-
-## Changing the port later
-
-**Settings → Web port** — edit, **Save**, then press **"Restart service & apply
-port"**. The page shows exactly what is happening:
-
-- `Saved port 8555 · running on 8555` → in sync
-- `Saved port 9000 · not applied — running on 8555` → press the restart button
-  (or run `sudo systemctl restart git-gateway` by hand)
-
-## Git control via GUI
-
-The repository page has a runner for **20 git commands**: status, log, blame,
-diff, show, add, commit, restore, stash, branch, switch, checkout, merge,
-rebase, cherry-pick, tag, describe, fetch, pull, push. Dangerous
-ones (pull/push/checkout/merge/rebase/cherry-pick/restore/stash) require the
-confirm checkbox; all arguments are validated before execution.
-
-## Commit history
-
-**Commit history** shows, per application (plus a global feed on the
-dashboard): `When · Hash (hover for the full hash) · Author · E-mail ·
-Date-time · Message`. An e-mail badge is green when that author is currently
-authorized in this repository, orange if the commit came from someone who is
-no longer allowed.
+- **First visit** asks for an admin username + password.
+- If Flask is missing: `sudo apt install python3-flask` (or let the installer
+  create a venv).
 
 ## Workflow after install
 
-1. **Applications** — press *Rescan*. Every folder containing `.git` under the
-   scan roots (default `~/frappe-bench/apps`, configurable in *Settings*) is listed.
+1. **Applications** — press *Rescan applications*. Every folder containing
+   `.git` under the scan roots is listed.
 2. **Users & Keys** — every e-mail found in `~/.ssh/authorized_keys` appears
-   automatically (each key is fingerprinted). You may also add a manual user.
-3. **Permissions** — tick which e-mail may commit to which application. Saving
-   rewrites each repository's hook + allowlist file (`.git/hooks/.ggw-allowed`).
-   A user with no permissions anywhere → **no commit is accepted from them**.
-4. **Settings → Install identity script** — one-time. It appends a managed
-   `# >>> git-gateway <<<` block to `~/.bashrc` (the old manual block can be
-   removed; this one replaces it and is stricter — it matches the actual key
-   used at login, not "the first e-mail it finds").
+   automatically. New keys can be added from the same page (with per-OS
+   instructions for the developers), or a manual user can be added.
+3. **Permissions** — tick which e-mail may commit to which application.
+   Saving rewrites each repository's hook + allowlist file
+   (`.git/hooks/.ggw-allowed`).
+4. **Settings → Install identity script** — one-time. It appends the managed
+   `# >>> git-gateway <<<` block to `~/.bashrc`.
 5. From then on: developers `ssh` in with their key and commit normally —
-   commits are automatically signed with their name/e-mail and only succeed if
-   they were granted that application.
+   commits are automatically signed with their name/e-mail and only succeed
+   if they were granted that application.
 
-## Security notes
+## Changing the port later
 
-- The GUI is protected by the admin password; all forms are CSRF-protected.
-- The GUI git runner validates arguments — remote URLs of `push/pull/fetch`,
-  `git config`, `-c` and pack-programs (`--upload-pack` etc.) are refused.
-- Repositories keep any foreign (non-Gateway) hooks — a "Custom hook" badge is
-  shown instead of overwriting them.
-- Admin actions run as your user (the systemd service user), same as a normal
-  SSH session.
+**Settings → Web port** — edit, **Save**, then press **"Restart service &
+apply port"**. The page shows exactly what is happening:
+
+- `Saved port 8555 · running on 8555` → in sync
+- `Saved port 9000 · not applied — running on 8555` → press the restart
+  button (or run `sudo systemctl restart git-gateway` by hand)
 
 ## Files layout
 
@@ -128,8 +141,11 @@ git-gateway/
   templates/        English GUI
   static/style.css
   install.sh        Linux installer (systemd)
+  update.sh         applies code changes to the running install
+  uninstall.sh      full removal
 ~/.gitgateway/      runtime data
-  config.json       port, admin password hash, scan roots
+  app/              the running copy of app.py + templates + static
+  config.json       port, secret, scan roots
   users.json        GUI panel accounts (username, role, salted hash)
   permissions.json  per-repo allowlists, manual users, display names
   identify.sh       SSH-identity autodetection (installed into .bashrc)
@@ -137,9 +153,9 @@ git-gateway/
 
 ## Updating the code (important)
 
-The systemd service runs **a copy** of the app at `~/.gitgateway/app` — editing
-files in `/opt/git-gateway` does nothing until they are copied and the service
-restarted. So after every change:
+The systemd service runs **a copy** of the app at `~/.gitgateway/app` —
+editing files in `/opt/git-gateway` does nothing until they are copied and
+the service restarted. So after every change:
 
 ```bash
 cd /opt/git-gateway
@@ -156,5 +172,5 @@ sudo rm /etc/systemd/system/git-gateway.service
 rm -rf ~/.gitgateway
 # hooks in each repository remain and keep enforcing; delete them with:
 #   rm <repo>/.git/hooks/pre-commit <repo>/.git/hooks/.ggw-allowed
-# and remove the "# >>> git-gateway >>>" block from ~/.bashrc
+# and remove the "# >>> git-gateway <<<" block from ~/.bashrc
 ```
