@@ -285,7 +285,9 @@ def parse_authorized_keys():
             all_e = list(dict.fromkeys(env_e + EMAIL_RE.findall(line)))
             entries.append({
                 "index": i,
+                "raw": line,
                 "emails": all_e,
+                "type": line.split()[0] if line.split() else "",
                 "fingerprints": fps[i] if i < len(fps) else "",
                 "comment": line.split()[-1] if len(line.split()) > 2 else "",
             })
@@ -833,7 +835,7 @@ def users():
             "repos": [os.path.basename(p) for p, lst in st["allowed"].items() if em in lst],
             "repos_num": sum(1 for lst in st["allowed"].values() if em in lst),
         })
-    return render_template("users.html", rows=rows, **base_ctx())
+    return render_template("users.html", rows=rows, keys=keys, **base_ctx())
 
 
 @app.route("/users/add", methods=["POST"])
@@ -881,6 +883,105 @@ def users_del():
     state_set(st)
     refresh_hooks()
     flash("User %s removed everywhere; hooks updated." % em, "success")
+    return redirect(url_for("users"))
+
+
+# ---------------------- authorized_keys management ----------------------
+KEY_TYPE_RE = r"(?:ssh-(?:rsa|dss|ed25519(?:-sk)?)|ecdsa-sha2-nistp\d{3}(?:-sk)?|sk-(?:ssh-ed25519|ecdsa-sha2-nistp\d{3})@openssh\.com)"
+
+
+def _backup_authorized_keys():
+    """Keep one backup copy before every write, so mistakes are reversible."""
+    try:
+        import shutil
+        shutil.copy2(SSH_KEYS, SSH_KEYS + ".ggw-bak")
+        return True
+    except Exception:
+        return False
+
+
+@app.route("/keys/add", methods=["POST"])
+@admin_required
+def keys_add():
+    body = (request.form.get("key") or "").strip()
+    extra_email = (request.form.get("email") or "").strip().lower()
+    if not body:
+        flash("Paste the public key first.", "error")
+        return redirect(url_for("users"))
+    if "PRIVATE KEY" in body or body.startswith("-----"):
+        flash("That is a PRIVATE key — never paste it anywhere! "
+              "Paste the .pub (public) key file contents.", "error")
+        return redirect(url_for("users"))
+    body = " ".join(body.split())                       # unwrap paste artifacts
+    m = re.match(r"^(?:\S+=(?:\"[^\"]*\"|\S+) )*(" + KEY_TYPE_RE + r") ([A-Za-z0-9+/=]{40,})\s*(.*)$", body)
+    if not m:
+        flash("That does not look like a valid public key "
+              "(expected: ssh-ed25519 / ssh-rsa / ecdsa… then the key base64).", "error")
+        return redirect(url_for("users"))
+    ktype, b64, comment = m.group(1), m.group(2), (m.group(3) or "").strip()
+    if re.search(KEY_TYPE_RE, comment):
+        flash("One key at a time please — that paste contained more than one key.", "error")
+        return redirect(url_for("users"))
+    email = (EMAIL_RE.findall(comment) or ([extra_email] if EMAIL_RE.fullmatch(extra_email or "") else []))
+    if not email:
+        flash("The key comment must contain your work e-mail "
+              '(like ssh-keygen -C "name@company.com") — or type it in the e-mail box below the field.',
+              "error")
+        return redirect(url_for("users"))
+    if EMAIL_RE.fullmatch(extra_email or "") and not EMAIL_RE.search(comment):
+        comment = extra_email              # add the e-mail as the key comment
+
+    ssh_dir = os.path.dirname(SSH_KEYS)
+    os.makedirs(ssh_dir, exist_ok=True)
+    line = body
+    try:
+        os.chmod(ssh_dir, 0o700)
+    except Exception:
+        pass
+    _backup_authorized_keys()
+    if os.path.isfile(SSH_KEYS):
+        existing = open(SSH_KEYS, encoding="utf-8", errors="ignore").read()
+        if b64 in existing:
+            flash("This exact key is already in authorized_keys.", "info")
+            return redirect(url_for("users"))
+        line = existing.rstrip("\n") + "\n" + body
+    with LOCK:
+        open(SSH_KEYS, "w", encoding="utf-8", newline="\n").write(line + "\n")
+    try:
+        os.chmod(SSH_KEYS, 0o600)
+    except Exception:
+        pass
+    flash("Key added (%s). Its e-mail %s appears on the Users page right away; "
+          "press Rescan applications so repositories see it too. "
+          "A backup of the previous file was saved as authorized_keys.ggw-bak."
+          % (ktype, email[0]), "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/keys/del", methods=["POST"])
+@admin_required
+def keys_del():
+    try:
+        idx = int(request.form.get("index", ""))
+    except ValueError:
+        abort(400, "Bad key index")
+    if not os.path.isfile(SSH_KEYS):
+        flash("No authorized_keys file.", "error")
+        return redirect(url_for("users"))
+    lines = open(SSH_KEYS, encoding="utf-8", errors="ignore").read().splitlines()
+    expect = (request.form.get("expect") or "").strip()
+    if idx < 0 or idx >= len(lines) or not lines[idx].strip() or lines[idx].strip().startswith("#") \
+       or (expect and lines[idx].strip() != expect):
+        flash("Key changed on disk — refresh the page and try again.", "error")
+        return redirect(url_for("users"))
+    _backup_authorized_keys()
+    with LOCK:
+        new = [l for i, l in enumerate(lines) if i != idx]
+        open(SSH_KEYS, "w", encoding="utf-8", newline="\n").write("\n".join(new) + ("\n" if new else ""))
+    flash("Key line %d removed (backup saved as authorized_keys.ggw-bak). "
+          "Its e-mail no longer comes from SSH; if it was granted repositories, "
+          "its access remains until you untick it on the Permissions page."
+          % idx, "success")
     return redirect(url_for("users"))
 
 

@@ -59,6 +59,98 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     <code>environment="GIT_AUTHOR_EMAIL=..."</code> option). Then press
     <b>Rescan applications</b> &mdash; the user appears here automatically.</p>
   </div>
+
+  <div class="card">
+    <h2>Keys in {{ ssh_path }} <span class="badge b-muted">{{ keys|length }}</span></h2>
+    {% if me_role == 'admin' %}
+    <p class="help">Add or remove public keys directly here — no shell needed.
+    A backup (<code>authorized_keys.ggw-bak</code>) is written before every change.
+    Never paste a <b>private</b> key (private keys stay on the developer's machine).</p>
+    <div class="wrap">
+    <table>
+      <tr><th>#</th><th>Type</th><th>E-mail</th><th>Fingerprint</th><th class="right">Actions</th></tr>
+      {% for k in keys %}
+      <tr>
+        <td>{{ k.index }}</td>
+        <td class="mono">{{ k.type }}</td>
+        <td>{% if k.emails %}{% for e in k.emails %}<span class="chip">{{ e }}</span>{% endfor %}
+            {% else %}<span class="badge b-warn">no e-mail in comment</span>{% endif %}</td>
+        <td class="help mono">{{ k.fingerprints[:44] or '—' }}</td>
+        <td class="right">
+          <form method="post" action="{{ url_for('keys_del') }}" class="inline"
+            onsubmit="return confirm('Remove this SSH key line from authorized_keys?\nThat developer will no longer be able to SSH in with it.')">
+            {{ csrf_field() }}<input type="hidden" name="index" value="{{ k.index }}">
+            <input type="hidden" name="expect" value="{{ k.raw }}">
+            <button class="btn sm ghost danger-text" {% if not me %}disabled{% endif %}>Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="help">No keys in the file yet — add one below.</td></tr>
+      {% endfor %}
+    </table>
+    </div>
+
+    <h2 style="margin-top:14px">Add a public key</h2>
+    <form method="post" action="{{ url_for('keys_add') }}">
+      {{ csrf_field() }}
+      <textarea name="key" rows="3" required
+        placeholder="ssh-ed25519 AAAAC3Nza...very-long-line... name@company.com"></textarea>
+      <div class="row" style="margin-top:8px">
+        <input type="text" name="email" placeholder="e-mail (only if the key comment lacks one)"
+          style="width:320px" autocomplete="off">
+        <button>Add key</button>
+      </div>
+      <p class="help">The e-mail links the key to a person (shown in commits and permissions).
+      It is read from the key comment <code>-C</code>; the extra box below is only for keys pasted without one.</p>
+    </form>
+
+    <h2 style="margin-top:16px">How does the developer create a key?</h2>
+    <p class="help">Each developer generates their <b>key pair on their own machine</b> and sends
+    only the <b>public</b> half (<code>.pub</code>) to be pasted above. The private key never leaves their computer.</p>
+
+    <details>
+      <summary class="cursor">&#128187; Windows (PowerShell)</summary>
+      <pre>ssh-keygen -t ed25519 -C "name@company.com"
+# press Enter twice (empty passphrase is enough for identifing),
+# stored at:  C:\Users\&lt;user&gt;\.ssh\id_ed25519.pub
+
+# copy the PUBLIC key to the clipboard:
+type $env:USERPROFILE\.ssh\id_ed25519.pub | clip
+
+# or show it in the terminal to copy by mouse:
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub</pre>
+    </details>
+    <details>
+      <summary class="cursor">&#128038; Linux</summary>
+      <pre>ssh-keygen -t ed25519 -C "name@company.com"
+# stored at:  ~/.ssh/id_ed25519.pub
+
+# show it (copy the whole line):
+cat ~/.ssh/id_ed25519.pub
+
+# or copy it straight to the clipboard (if xclip is installed):
+xclip -selection clipboard &lt; ~/.ssh/id_ed25519.pub</pre>
+    </details>
+    <details>
+      <summary class="cursor">&#127820; macOS</summary>
+      <pre>ssh-keygen -t ed25519 -C "name@company.com"
+# stored at:  ~/.ssh/id_ed25519.pub
+
+# copy the PUBLIC key to the clipboard instantly:
+pbcopy &lt; ~/.ssh/id_ed25519.pub
+
+# or display it:
+cat ~/.ssh/id_ed25519.pub</pre>
+    </details>
+    <p class="help"><b>The <code>-C "email"</code> part is important</b> — it is what Git Gateway
+    reads to know whose key it is and stamp commits with their identity.
+    After pasting the key here, the developer connects with
+    <code>ssh user@server</code> and starts working on the applications.</p>
+    {% else %}
+    <p>Only administrators can manage SSH keys.</p>
+    {% endif %}
+  </div>
 </div>
 
 <div class="card">
