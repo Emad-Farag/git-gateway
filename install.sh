@@ -40,17 +40,40 @@ echo "==> Git Gateway installer (port $SERVICE_PORT, user $SERVICE_USER)"
 command -v git >/dev/null 2>&1 || { echo "ERROR: git is not installed"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is not installed"; exit 1; }
 
-if ! python3 -c "import flask" >/dev/null 2>&1; then
-  echo "==> Installing Flask (pip --user)..."
-  pip3 install --user flask || pip3 install flask || {
-    echo "==> Falling back to a virtualenv at ~/.gitgateway/venv:"
-    python3 -m venv "$HOME/.gitgateway/venv"
-    "$HOME/.gitgateway/venv/bin/pip" install flask
-    PYTHON_BIN="$HOME/.gitgateway/venv/bin/python"
-  }
+# --- pick ONE python and stick with it everywhere ---------------------------
+# (pip3 may belong to a different Python version than `python3` — that would
+#  install Flask where the app can never find it. So we always install with
+#  the very interpreter that will run the app.)
+PYTHON_BIN="$(command -v python3)"
+PYVER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+echo "==> Using interpreter: $PYTHON_BIN (Python $PYVER)"
+
+# sanity: pip must import? pip module must even exist for this interpreter
+check_flask () { "$PYTHON_BIN" -c "import flask" >/dev/null 2>&1; }
+
+if ! check_flask; then
+  echo "==> Installing Flask with $PYTHON_BIN -m pip (user install)..."
+  if ! "$PYTHON_BIN" -m pip install --user flask 2>/dev/null; then
+    # pip module itself might be missing for this interpreter
+    "$PYTHON_BIN" -m ensurepip --user >/dev/null 2>&1 || true
+    "$PYTHON_BIN" -m pip install --user flask 2>/dev/null || pip3 install --user flask 2>/dev/null || true
+  fi
 fi
-PYTHON_BIN="${PYTHON_BIN:-$(which python3)}"
-"$PYTHON_BIN" -c "import flask" || { echo "ERROR: Flask still missing"; exit 1; }
+
+if ! check_flask; then
+  echo "==> pip failed — falling back to a virtualenv at ~/.gitgateway/venv"
+  "$PYTHON_BIN" -m venv "$HOME/.gitgateway/venv" || {
+    echo "ERROR: 'python3 -m venv' failed. Run: sudo apt install python3-venv python3-pip"; exit 1; }
+  "$HOME/.gitgateway/venv/bin/pip" install flask
+  PYTHON_BIN="$HOME/.gitgateway/venv/bin/python"
+fi
+
+check_flask || {
+  echo "ERROR: Flask could not be installed for $PYTHON_BIN."
+  echo "Try: sudo apt install python3-flask python3-pip ; then re-run install.sh"
+  exit 1
+}
+echo "==> Flask OK ($("$PYTHON_BIN" -c 'import flask; print(flask.__version__)'))"
 
 # --- copy application files -------------------------------------------------
 echo "==> Installing files to $DEST"
