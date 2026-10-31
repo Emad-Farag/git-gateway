@@ -540,29 +540,28 @@ app.jinja_env.globals["csrf_field"] = csrf_field
 
 @app.before_request
 def gate():
-    if request.endpoint in {"setup", "login", "static"}:
-        if request.endpoint == "setup" and cfg_get("password_hash"):
+    public = request.endpoint in {"setup", "login", "static", "logout"}
+
+    # CSRF on every POST (public and protected)
+    if request.method == "POST" and request.endpoint != "logout":
+        tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
+        if not hmac.compare_digest(tok, session.get("_csrf", "")):
+            abort(400, "CSRF check failed")
+
+    if public:
+        if request.endpoint == "setup" and gui_users():
             return redirect(url_for("login"))
-        # still require CSRF token presence on POST
-        if request.method == "POST":
-            tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
-            if not hmac.compare_digest(tok, session.get("_csrf", "")):
-                abort(400, "CSRF check failed")
         return None
-    if request.method == "POST":
-        tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
-        if not hmac.compare_digest(tok, session.get("_csrf", "")):
-            abort(400, "CSRF check failed")
-    if request.method == "POST":
-        tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
-        if not hmac.compare_digest(tok, session.get("_csrf", "")):
-            abort(400, "CSRF check failed")
-    if not gui_users():
-        migrate_legacy_admin_password()
+
+    migrate_legacy_admin_password()
     if not gui_users():
         return redirect(url_for("setup"))
     if not session.get("user"):
-        return redirect(url_for("login", next=request.path))
+        # preserve the full URL (path + query) so deep links survive login
+        target = request.path
+        if request.query_string:
+            target += "?" + request.query_string.decode("utf-8", "replace")
+        return redirect(url_for("login", next=target))
 
 
 # ---------------------- auth ----------------------
@@ -762,7 +761,8 @@ def hooks_refresh():
 def hook_install():
     repo = request.form.get("repo", "")
     if repo not in find_repos():
-        abort(404)
+        flash("Repository not found — cannot install the hook.", "error")
+        return redirect(url_for("dashboard"))
     st = state_get()
     install_hook(repo, st["allowed"].get(repo, []))
     nxt = request.form.get("next") or url_for("dashboard")
@@ -884,7 +884,9 @@ def permissions_save():
 def repo():
     path = request.args.get("p", "")
     if path not in find_repos():
-        abort(404)
+        flash("Repository not found (it may have been moved or removed). "
+              "Press Rescan applications to re-detect it.", "error")
+        return redirect(url_for("dashboard"))
     st = state_get()
     r = repo_meta(path)
     r["hook"], r["users"] = hook_state(path, st), st["allowed"].get(path, [])
@@ -950,7 +952,8 @@ def repo_run():
     cmd  = (request.form.get("cmd") or "").strip()
     nxt  = request.form.get("next") or url_for("dashboard")
     if path not in find_repos():
-        abort(404)
+        flash("Repository not found — cannot run 'git %s' on it." % cmd, "error")
+        return redirect(url_for("dashboard"))
     if cmd not in ALLOWED_CMDS:
         abort(400, "Command not allowed: %s" % cmd)
     if session.get("role") != "admin" and cmd not in VIEWER_OK:
@@ -977,7 +980,8 @@ def repo_grant():
     path, email = request.form.get("repo", ""), request.form.get("email", "")
     nxt = request.form.get("next") or url_for("repo", p=path)
     if path not in find_repos() or email not in all_emails():
-        abort(404)
+        flash("Repository or user not found — permission not changed.", "error")
+        return redirect(url_for("dashboard"))
     st = state_get()
     lst = st["allowed"].setdefault(path, [])
     if email in lst:
