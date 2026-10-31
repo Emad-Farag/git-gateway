@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Applications - Git Gateway{% endblock %}
+{% block content %}
+<h1>Applications</h1>
+<p class="lead">Every detected git repository on this server, its hook status and the last commit.</p>
+
+<div class="stats">
+  <div class="stat"><div class="n">{{ total }}</div><div class="t">Repositories</div></div>
+  <div class="stat"><div class="n">{{ emails_total }}</div><div class="t">Registered users</div></div>
+  <div class="stat"><div class="n">{% if bashrc_state == 'installed' %}&#10003;{% else %}&#8212;{% endif %}</div><div class="t">SSH identity script</div></div>
+</div>
+
+<div class="row" style="margin-bottom:14px">
+  <form method="post" action="{{ url_for('scan') }}" class="inline">{{ csrf_field() }}<button class="btn ghost sm">&#8635;&nbsp; Rescan applications</button></form>
+  <form method="post" action="{{ url_for('hooks_refresh') }}" class="inline">{{ csrf_field() }}<button class="btn ghost sm">&#10097;&nbsp; Refresh all hooks</button></form>
+  <span class="help">Hooks sync automatically when permissions change too.</span>
+</div>
+
+{% if output %}
+<div class="card"><h2>Command output <span class="badge {{ 'b-ok' if output.ok else 'b-err' }}">{{ output.label }}</span></h2>
+<pre>{{ output.text or '(no output)' }}</pre></div>
+{% endif %}
+
+<div class="card">
+  <div class="wrap">
+  <table>
+    <tr><th>Application</th><th>Branch</th><th>Status</th><th>Last commit</th><th>Authorized users</th><th>Hook</th><th class="right">Actions</th></tr>
+    {% for r in repos %}
+    <tr>
+      <td><a href="{{ url_for('repo', p=r.path) }}"><b>{{ r.name }}</b></a><br>
+        <span class="help mono">{{ r.remote or 'no remote' }}</span></td>
+      <td><span class="chip mono">{{ r.branch }}</span></td>
+      <td>{% if r.dirty %}<span class="badge b-warn">{{ r.dirty }} unsaved</span>{% else %}<span class="badge b-ok">clean</span>{% endif %}
+        {% if r.ahead %}<span class="badge b-info">&uarr;{{ r.ahead }}</span>{% endif %}
+        {% if r.behind %}<span class="badge b-warn">&darr;{{ r.behind }}</span>{% endif %}</td>
+      <td>{% if r.last %}<span class="mono">{{ r.last.hash }}</span> {{ r.last.msg }}<br>
+          <span class="help">{{ r.last.when }} &middot; {{ r.last.author }} ({{ r.last.email }})</span>
+          {% else %}<span class="help">no commits yet</span>{% endif %}</td>
+      <td>{% if r.users %}{% for u in r.users %}<span class="chip">{{ u }}</span>{% endfor %}
+          {% else %}<span class="badge b-err"> nobody</span>{% endif %}</td>
+      <td>{% if r.hook == 'installed' %}<span class="badge b-ok">Enforced</span>
+          {% elif r.hook == 'stale' %}<span class="badge b-warn">Out of date</span>
+          {% elif r.hook == 'foreign' %}<span class="badge b-warn">Custom hook</span>
+          {% else %}<span class="badge b-muted">None</span>{% endif %}</td>
+      <td class="right">
+        <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+          {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+          <input type="hidden" name="next" value="{{ url_for('dashboard') }}">
+          <input type="hidden" name="cmd" value="pull"><input type="hidden" name="confirm" value="yes">
+          <button class="btn sm ghost">Pull</button></form>
+        <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+          {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+          <input type="hidden" name="next" value="{{ url_for('dashboard') }}">
+          <input type="hidden" name="cmd" value="push"><input type="hidden" name="confirm" value="yes">
+          <button class="btn sm ghost">Push</button></form>
+        <a class="btn sm" href="{{ url_for('repo', p=r.path) }}">Open</a>
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not repos %}<tr><td colspan="7" class="center help">No repositories found. Add a scan root in Settings and rescan.</td></tr>{% endif %}
+  </table>
+  </div>
+</div>
+
+<h2>Recent commits &mdash; all applications</h2>
+<div class="card">
+  <div class="wrap">
+  <table>
+    <tr><th>When</th><th>Author</th><th>E-mail</th><th>Application</th><th>Commit</th><th>Message</th></tr>
+    {% for c in feed %}
+    <tr>
+      <td class="help">{{ c.when }}</td>
+      <td>{{ c.author }}</td>
+      <td class="help">{{ c.email }}</td>
+      <td><a href="{{ url_for('repo', p=c.path) }}">{{ c.repo }}</a></td>
+      <td><code>{{ c.hash }}</code></td>
+      <td>{{ c.msg }}</td>
+    </tr>
+    {% endfor %}
+    {% if not feed %}<tr><td colspan="6" class="help center">No commits yet.</td></tr>{% endif %}
+  </table>
+  </div>
+</div>
+{% endblock %}

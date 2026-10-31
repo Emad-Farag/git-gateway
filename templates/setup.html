@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Welcome - Git Gateway{% endblock %}
+{% block body %}
+<div class="main" style="max-width:420px;margin:12vh auto">
+  <div class="card">
+    <h1>Welcome to Git Gateway</h1>
+    <p class="lead">Create the administrator password. <b>Anyone</b> with this
+    password can grant commit access on this server — keep it safe.</p>
+    <form method="post">
+      {{ csrf_field() }}
+      <input type="password" name="pw" placeholder="Set admin password (min 6 chars)" required
+        style="width:100%;margin-bottom:10px">
+      <button>Save &amp; Sign in</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

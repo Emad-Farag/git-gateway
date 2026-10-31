@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Users & Keys - Git Gateway{% endblock %}
+{% block content %}
+<h1>Users &amp; SSH Keys</h1>
+<p class="lead">People are identified by the e-mail written inside their SSH key in
+<code>~/.ssh/authorized_keys</code> (or added manually below). A user who has no
+repository permission can never commit &mdash; the hook blocks it.</p>
+
+<div class="card">
+  <div class="wrap">
+  <table>
+    <tr><th>E-mail</th><th>Display name</th><th>Identity</th><th>Fingerprint</th><th>Repositories</th><th class="right">Actions</th></tr>
+    {% for u in rows %}
+    <tr>
+      <td><b>{{ u.email }}</b></td>
+      <td>
+        <form method="post" action="{{ url_for('users_name') }}" class="row inline">
+          {{ csrf_field() }}
+          <input type="hidden" name="email" value="{{ u.email }}">
+          <input type="text" name="name" value="{{ u.name }}" style="width:130px;padding:5px 8px">
+          <button class="btn ghost sm">Save</button>
+        </form>
+      </td>
+      <td>{% if u.has_key %}<span class="badge b-ok">SSH key</span>
+          {% else %}<span class="badge b-warn">Manual</span>{% endif %}</td>
+      <td class="help mono">{% for fp in u.fingerprints %}<code>{{ fp }}</code><br>{% endfor %}{% if not u.fingerprints %}&mdash;{% endif %}</td>
+      <td>{% if u.repos %}{% for r in u.repos %}<span class="chip">{{ r }}</span>{% endfor %}
+          {% else %}<span class="badge b-err"> none &mdash; commits blocked</span>{% endif %}</td>
+      <td class="right">
+        <form method="post" action="{{ url_for('users_del') }}" class="inline">
+          {{ csrf_field() }}<input type="hidden" name="email" value="{{ u.email }}">
+          <button class="btn sm danger">Remove</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+    {% if not rows %}<tr><td colspan="6" class="center help">
+      No e-mails found in <code>~/.ssh/authorized_keys</code>. Add keys there (recommended) or a manual user below.</td></tr>{% endif %}
+  </table>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Add a user manually</h2>
+    <p class="help">For people whose key lives on another machine &mdash; they can be granted
+    repositories, but the pre-commit hook still requires the e-mail to be present in
+    <code>authorized_keys</code> unless the identity script matched it at login.</p>
+    <form method="post" action="{{ url_for('users_add') }}" class="row">
+      {{ csrf_field() }}
+      <input type="text" name="email" placeholder="name@company.com" style="flex:1;min-width:220px">
+      <button>Add user</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>How to register a new developer</h2>
+    <p>On the server, add their public key to the authority file:</p>
+    <pre>echo "ssh-ed25519 AAAA... dev.name@company.com" >> ~/.ssh/authorized_keys</pre>
+    <p class="help">The e-mail must be part of the key comment (or an
+    <code>environment="GIT_AUTHOR_EMAIL=..."</code> option). Then press
+    <b>Rescan applications</b> &mdash; the user appears here automatically.</p>
+  </div>
+</div>
+{% endblock %}

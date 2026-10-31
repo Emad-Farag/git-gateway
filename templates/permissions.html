@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Permissions - Git Gateway{% endblock %}
+{% block content %}
+<h1>Permissions</h1>
+<p class="lead">Tick who may commit to which application, then save —
+the pre-commit hooks are rewritten immediately.</p>
+
+<form method="post" action="{{ url_for('permissions_save') }}">
+  {{ csrf_field() }}
+  <div class="card"><div class="wrap">
+  <table>
+    <tr>
+      <th>User (e-mail)</th>
+      {% for r in repos %}<th class="center">{{ r.name }}<br><span class="help">{{ r.branch }}</span></th>{% endfor %}
+    </tr>
+    {% for e in emails %}
+    <tr>
+      <td>
+        <b>{{ e }}</b><br>
+        <span class="help">{% if e in ssh_email_set %}SSH key &#10003;{% else %}manual{% endif %}</span>
+      </td>
+      {% for r in repos %}
+      <td class="center">
+        <input class="cbox" type="checkbox"
+               name="{{ r.path }}|{{ e }}"
+               {% if e in allowed.get(r.path, []) %}checked{% endif %}>
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+  </div></div>
+  <button>Save permissions &amp; update hooks</button>
+</form>
+
+{% if not repos %}<p class="help">No repositories detected yet.</p>{% endif %}
+{% endblock %}

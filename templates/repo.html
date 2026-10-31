@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}{{ r.name }} - Git Gateway{% endblock %}
+{% block content %}
+<h1><a href="{{ url_for('dashboard') }}">&#8592;</a>&nbsp; {{ r.name }}</h1>
+<p class="lead mono">{{ r.path }}</p>
+
+<div class="row" style="margin-bottom:14px">
+  <span class="chip mono">{{ r.branch }}</span>
+  <span class="chip mono">{{ r.remote or 'no remote configured' }}</span>
+  {% if r.dirty %}<span class="badge b-warn">{{ r.dirty }} unsaved files</span>{% else %}<span class="badge b-ok">clean</span>{% endif %}
+  {% if r.ahead %}<span class="badge b-info">&uarr; {{ r.ahead }} ahead</span>{% endif %}
+  {% if r.behind %}<span class="badge b-warn">&darr; {{ r.behind }} behind</span>{% endif %}
+  {% if r.hook == 'installed' %}<span class="badge b-ok">Hook: Enforced</span>
+  {% elif r.hook == 'stale' %}<span class="badge b-warn">Hook: Out of date</span>
+  {% elif r.hook == 'foreign' %}<span class="badge b-warn">Hook: Custom (untouched)</span>
+  {% else %}<span class="badge b-muted">Hook: none</span>{% endif %}
+  {% if not r.users %}<span class="badge b-err">No authorized users</span>{% endif %}
+</div>
+
+<div class="row" style="margin-bottom:16px">
+  <form method="post" action="{{ url_for('hook_install') }}" class="inline">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <button class="btn ghost sm">&#10097; Write hook + allowlist</button>
+  </form>
+  <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <input type="hidden" name="cmd" value="status"><button class="btn ghost sm">Status</button>
+  </form>
+  <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <input type="hidden" name="cmd" value="pull"><input type="hidden" name="confirm" value="yes">
+    <button class="btn ghost sm">Pull</button>
+  </form>
+  <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <input type="hidden" name="cmd" value="push"><input type="hidden" name="confirm" value="yes">
+    <button class="btn ghost sm">Push</button>
+  </form>
+  <form method="post" action="{{ url_for('repo_run') }}" class="inline">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <input type="hidden" name="cmd" value="add"><input type="hidden" name="args" value=".">
+    <button class="btn ghost sm">Stage all</button>
+  </form>
+</div>
+
+{% if output %}
+<div class="card"><h2>Command output <span class="badge {{ 'b-ok' if output.ok else 'b-err' }}">{{ output.label }}</span></h2>
+<pre>{{ output.text or '(no output)' }}</pre></div>
+{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2>Run a git command</h2>
+    <form method="post" action="{{ url_for('repo_run') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="repo" value="{{ r.path }}">
+      <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+      <div class="runbar">
+        <div class="field"><label>Command</label>
+          <select name="cmd" required>
+            {% for c, label, confirm in commands %}
+            <option value="{{ c }}">git {{ c }} — {{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field grow"><label>Arguments (optional, space separated)</label>
+          <input type="text" name="args" placeholder='e.g. checkout -b my-branch   or   commit -m "Fix bug"' style="width:100%">
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <label class="ck"><input type="checkbox" name="confirm" value="yes" class="cbox">
+          Confirm (required for pull / push / checkout / merge / discard)</label>
+        <span class="grow"></span>
+        <button>Run</button>
+      </div>
+      <p class="help">Committed via the GUI goes through the same identity hook.
+      Args are validated: remote URLs, <code>-c</code>, configs are refused.</p>
+    </form>
+
+    <h2>Changed files</h2>
+    <div class="wrap">
+    <table>
+      {% for s in statuses %}<tr><td><code>{{ s }}</code></td></tr>{% endfor %}
+      {% if not statuses %}<tr><td class="help">Working tree clean.</td></tr>{% endif %}
+    </table>
+    </div>
+    {% if diffstat.out %}<pre>{{ diffstat.out }}</pre>{% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Who may commit here</h2>
+    <form method="post" action="{{ url_for('repo_grant') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="repo" value="{{ r.path }}">
+      <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+      <div class="row">
+        <select name="email" class="grow">
+          {% for e in emails %}
+          <option value="{{ e.email }}">{{ e.email }} ({{ e.name }}){% if e.allowed %} — allowed{% endif %}</option>
+          {% endfor %}
+        </select>
+        <button>Toggle access</button>
+      </div>
+    </form>
+    <div style="margin-top:10px">
+      {% for e in r.users %}<span class="chip">&#10003; {{ e }}</span>{% endfor %}
+      {% if not r.users %}<span class="badge b-err">nobody — every commit will be rejected</span>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Branches</h2>
+    <pre>{{ branches | join('\n') or '(none)' }}</pre>
+    <h2>Remotes</h2>
+    <pre>{{ remotes | join('\n') or '(none)' }}</pre>
+  </div>
+  <div class="card">
+    <h2>Commit history &mdash; who did what</h2>
+    <div class="wrap">
+    <table>
+      <tr><th>When</th><th>Hash</th><th>Author</th><th>E-mail</th><th>Date</th><th>Message</th></tr>
+      {% for c in commits %}
+      <tr>
+        <td class="help">{{ c.when }}</td>
+        <td><code title="Full hash: {{ c.hash_full }}">{{ c.hash }}</code></td>
+        <td><b>{{ c.author }}</b></td>
+        <td class="help">{% if c.email in r.users %}<span class="badge b-ok mono">{{ c.email }}</span>
+            {% else %}<span class="badge b-warn mono">{{ c.email }}</span>{% endif %}</td>
+        <td class="help">{{ c.date }}</td>
+        <td>{{ c.msg }}</td>
+      </tr>
+      {% endfor %}
+      {% if not commits %}<tr><td colspan="6" class="center help">No commits yet.</td></tr>{% endif %}
+    </table>
+    </div>
+    <p class="help">Green e-mail = currently authorized here. Orange = committed
+    before being removed from the allowlist.</p>
+  </div>
+</div>
+{% endblock %}

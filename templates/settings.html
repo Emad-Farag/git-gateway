@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Settings - Git Gateway{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="lead">Scan locations, the automatic login-identity script and the admin password.</p>
+
+<div class="grid2">
+  <div class="card">
+    <h2>Repository scan roots</h2>
+    <p class="help">One directory per line. Every git repository under it is
+    detected automatically (up to 5 levels deep).</p>
+    <form method="post" action="{{ url_for('settings_save') }}">
+      {{ csrf_field() }}
+      <textarea name="scan_roots" rows="4">{{ scan_roots }}</textarea>
+      <h2 style="margin-top:14px">Web port</h2>
+      <input type="number" name="port" value="{{ port }}" min="1" max="65535" style="width:120px">
+      <div style="margin-top:14px"><button>Save</button></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>SSH identity on login</h2>
+    <p>Git Gateway installs a small script that, when a developer opens an SSH
+    session, matches <b>their agent key fingerprint</b> against
+    <code>~/.ssh/authorized_keys</code> and exports the matching e-mail as
+    <code>GIT_AUTHOR_EMAIL / GIT_COMMITTER_EMAIL</code> plus a derived display
+    name. The pre-commit hook then refuses any commit that is not stamped with
+    an authorized e-mail.</p>
+    {% if bashrc_state == 'installed' %}
+      <span class="badge b-ok">Installed in ~/.bashrc</span>
+      <span class="help"> &mdash; applies to <b>new</b> SSH logins.</span>
+    {% else %}
+      <span class="badge b-warn">Not installed</span>
+    {% endif %}
+    <form method="post" action="{{ url_for('bashrc_install') }}" style="margin-top:12px">
+      {{ csrf_field() }}<input type="hidden" name="next" value="settings">
+      <button class="btn {{ 'ghost' if bashrc_state == 'installed' else '' }}">
+        {{ 'Reinstall / update' if bashrc_state == 'installed' else 'Install identity script' }}</button>
+    </form>
+    {% if identify %}<pre style="margin-top:12px">{{ identify }}</pre>{% endif %}
+  </div>
+</div>
+
+<div class="grid2">
+<div class="grid2">
+  <div class="card">
+    <h2>Change admin password</h2>
+    <form method="post" action="{{ url_for('password') }}" class="row">
+      {{ csrf_field() }}
+      <input type="password" name="old" placeholder="Current password" style="width:180px">
+      <input type="password" name="new" placeholder="New password" style="width:180px">
+      <button>Change</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>Web port &amp; service</h2>
+    <table>
+      <tr><td>Saved port</td><td><code>{{ port }}</code>
+        {% if port_dirty %}<span class="badge b-warn">not applied — running on {{ run_port }}</span>
+        {% else %}<span class="badge b-ok">running on {{ run_port }}</span>{% endif %}</td></tr>
+      <tr><td>Systemd service</td><td>
+        {% if service_active %}<span class="badge b-ok">git-gateway.service is active</span>
+        {% else %}<span class="badge b-muted">not running as a service</span>{% endif %}</td></tr>
+      <tr><td>URL</td><td><code>http://&lt;server-ip&gt;:{{ run_port }}</code></td></tr>
+    </table>
+    <div class="row" style="margin-top:12px">
+      <form method="post" action="{{ url_for('service_restart') }}" onsubmit="return confirm('Restart the git-gateway service now? The GUI will be unavailable for a second.')">
+        {{ csrf_field() }}<input type="hidden" name="next" value="{{ url_for('settings') }}">
+        <button class="btn {{ 'ghost' if not port_dirty else '' }}">&#8635; Restart service{% if port_dirty %} &amp; apply port {% endif %}</button>
+      </form>
+      <span class="help">If the button fails, run manually:
+      <code>sudo systemctl restart git-gateway</code></span>
+    </div>
+  </div>
+</div>
+  <div class="card">
+    <h2>Files on the server</h2>
+    <table>
+      <tr><td>SSH authority file</td><td><code>{{ ssh_path }}</code></td></tr>
+      <tr><td>Gateway state</td><td><code>{{ data_dir }}/permissions.json</code></td></tr>
+      <tr><td>Gateway config</td><td><code>{{ data_dir }}/config.json</code></td></tr>
+      <tr><td>Identity script</td><td><code>{{ data_dir }}/identify.sh</code></td></tr>
+      <tr><td>Hook in each repo</td><td><code>.git/hooks/pre-commit</code> + <code>.ggw-allowed</code></td></tr>
+    </table>
+  </div>
+</div>
+{% endblock %}
