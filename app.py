@@ -774,6 +774,36 @@ def hook_install():
     return redirect(nxt)
 
 
+@app.route("/hook/remove", methods=["POST"])
+@admin_required
+def hook_remove():
+    """Delete .git/hooks/pre-commit — only if it is ours or broken/empty.
+    A real custom hook written by other tooling is never removed."""
+    repo = request.form.get("repo", "")
+    nxt = request.form.get("next") or url_for("dashboard")
+    if repo not in find_repos():
+        flash("Repository not found — cannot remove the hook.", "error")
+        return redirect(url_for("dashboard"))
+    hook = os.path.join(repo, ".git", "hooks", "pre-commit")
+    if not os.path.isfile(hook):
+        flash("No pre-commit hook present on %s." % os.path.basename(repo), "info")
+        return redirect(nxt)
+    try:
+        content = open(hook, encoding="utf-8", errors="ignore").read()
+    except Exception:
+        content = ""
+    if HOOK_MARKER not in content and content.strip():
+        flash("That pre-commit is a custom hook (not written by Git Gateway) "
+              "— removing it is refused. Remove it manually if you are sure.",
+              "error")
+        return redirect(nxt)
+    os.remove(hook)
+    flash("pre-commit hook removed from %s. Commits are no longer blocked "
+          "by Git Gateway here (the allowlist file was left in place)."
+          % os.path.basename(repo), "success")
+    return redirect(nxt)
+
+
 @app.route("/bashrc/install", methods=["POST"])
 @admin_required
 def bashrc_install():

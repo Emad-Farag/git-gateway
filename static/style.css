@@ -67,6 +67,8 @@ button:hover,.btn:hover{filter:brightness(1.1);text-decoration:none}
 .btn.ghost:hover{background:var(--panel2)}
 .btn.danger{background:var(--err)}
 .btn.ok{background:var(--ok)}
+.danger-text{color:#f0a0a0}
+.danger-text:hover{background:rgba(224,82,82,.12);border-color:rgba(224,82,82,.4)}
 .btn:disabled{opacity:.5;cursor:default}
 input[type=text],input[type=tel],input[type=password],input[type=number],textarea,select{
   background:var(--panel2);border:1px solid var(--border);color:var(--text);

@@ -28,6 +28,12 @@
     <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
     <button class="btn ghost sm">&#10097; Write hook + allowlist</button>
   </form>
+  <form method="post" action="{{ url_for('hook_remove') }}" class="inline"
+    onsubmit="return confirm('Remove the Git Gateway pre-commit hook from this application?\n(A custom hook written by other tools will NOT be removed)')">
+    {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
+    <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}">
+    <button class="btn ghost sm danger-text">&#10005; Remove hook</button>
+  </form>
   <form method="post" action="{{ url_for('repo_run') }}" class="inline">
     {{ csrf_field() }}<input type="hidden" name="repo" value="{{ r.path }}">
     <input type="hidden" name="next" value="{{ url_for('repo') }}?p={{ r.path|urlencode }}#output">
