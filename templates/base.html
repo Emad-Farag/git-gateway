@@ -35,6 +35,7 @@
       {% if msgs %}<div class="flashes">{% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}</div>{% endif %}
     {% endwith %}
     {% block content %}{% endblock %}
+    <div class="credit">Developed by <a href="https://github.com/Emad-Farag" target="_blank" rel="noopener">Emad Farag</a></div>
   </main>
 </div>
 {% endblock %}
