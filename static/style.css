@@ -1,19 +1,21 @@
 :root{
-  --bg:#0f1115; --panel:#161a22; --panel2:#1c212d; --border:#2a3140;
+  --bg:#0d1017; --panel:#151a23; --panel2:#1b212d; --border:#2a3140;
   --text:#e6e9ef; --muted:#8b93a5; --accent:#4f8cff; --ok:#3fb96f;
-  --warn:#e0a53c; --err:#e05252; --chip:#242b3a; --radius:10px;
+  --warn:#e0a53c; --err:#e05252; --chip:#242b3a; --radius:12px;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);
-  font:14px/1.5 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  font:14px/1.55 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 code{font-family:ui-monospace,Consolas,monospace;background:#0a0c10;
   padding:1px 6px;border-radius:4px;font-size:12.5px;color:#9fd08a}
 pre{font-family:ui-monospace,Consolas,monospace;background:#0a0c10;border:1px solid var(--border);
-  border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:12.5px;color:#cdd6e4;max-height:420px;overflow-y:auto;margin:0}
+  border-radius:8px;padding:12px 14px;overflow:auto;font-size:12.5px;color:#cdd6e4;
+  max-height:440px;margin:0;white-space:pre;width:100%}
+input,select,textarea,button{max-width:100%}
 
-/* layout */
+/* ---------- layout ---------- */
 .shell{display:flex;min-height:100vh}
 .side{width:220px;flex:0 0 220px;background:var(--panel);border-right:1px solid var(--border);
   padding:18px 14px;position:sticky;top:0;height:100vh;overflow-y:auto}
@@ -25,14 +27,17 @@ pre{font-family:ui-monospace,Consolas,monospace;background:#0a0c10;border:1px so
 .side nav a:hover{background:var(--panel2);text-decoration:none}
 .side nav a.active{background:var(--chip);color:#fff;font-weight:600}
 .side .foot{margin-top:26px;font-size:11px;color:var(--muted);word-break:break-all}
-.main{flex:1;padding:24px 30px;min-width:0}
-h1{font-size:20px;margin:0 0 4px}
-h2{font-size:15px;margin:26px 0 10px}
+.side .side-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.main{flex:1;padding:24px 30px 40px;min-width:0}
+h1{font-size:21px;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:15px;margin:26px 0 10px;letter-spacing:-.01em;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+h2 .help{font-size:12px;font-weight:400}
 .lead{color:var(--muted);margin:0 0 20px}
 
-/* cards & tables */
+/* ---------- cards & tables ---------- */
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
-  padding:16px 18px;margin-bottom:16px}
+  padding:16px 18px;margin-bottom:16px;min-width:0}
 .card h2{margin-top:0}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th{color:var(--muted);text-align:left;font-weight:600;font-size:11.5px;text-transform:uppercase;
@@ -42,7 +47,7 @@ tr:last-child td{border-bottom:none}
 tr:hover td{background:rgba(255,255,255,.015)}
 .wrap{overflow-x:auto}
 
-/* badges & chips */
+/* ---------- badges & chips ---------- */
 .badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600}
 .b-ok{background:rgba(63,185,111,.15);color:var(--ok)}
 .b-info{background:rgba(79,140,255,.15);color:#7da7ff}
@@ -53,9 +58,9 @@ tr:hover td{background:rgba(255,255,255,.015)}
   padding:1px 8px;border-radius:6px;font-size:11.5px;margin:1px 3px 1px 0;color:#c3cad8}
 .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
 
-/* buttons & forms */
+/* ---------- buttons & forms ---------- */
 button,.btn{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:8px;
-  padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
 button:hover,.btn:hover{filter:brightness(1.1);text-decoration:none}
 .btn.sm{padding:4px 10px;font-size:12px;border-radius:6px}
 .btn.ghost{background:var(--chip);color:var(--text);border:1px solid var(--border)}
@@ -70,52 +75,84 @@ textarea{width:100%;font-family:ui-monospace,Consolas,monospace}
 input:focus,textarea:focus,select:focus{outline:1px solid var(--accent)}
 form.inline{display:inline}
 label.ck{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted);font-size:12.5px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.grow{flex:1}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;min-width:0}
+.grow{flex:1;min-width:0}
 .help{color:var(--muted);font-size:12px}
 
-/* flash */
+/* ---------- flash ---------- */
 .flashes{margin-bottom:14px}
 .flash{padding:9px 14px;border-radius:8px;margin-bottom:8px;font-size:13px;border:1px solid}
 .flash.success{background:rgba(63,185,111,.1);border-color:rgba(63,185,111,.4);color:#8fe0b0}
 .flash.error{background:rgba(224,82,82,.1);border-color:rgba(224,82,82,.4);color:#f0a0a0}
 .flash.info{background:rgba(79,140,255,.1);border-color:rgba(79,140,255,.4);color:#a9c4ff}
 
-/* stats */
+/* ---------- stats ---------- */
 .stats{display:flex;gap:12px;margin-bottom:18px}
 .stat{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px}
 .stat .n{font-size:24px;font-weight:700}
 .stat .t{color:var(--muted);font-size:12px}
 
-/* layout helpers */
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+/* ---------- grid: every child can shrink (fixes wide-line overflow) ---------- */
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.grid2>div{min-width:0}
 @media(max-width:900px){.grid2{grid-template-columns:1fr}}
 .matrix td:first-child{position:sticky;left:0;background:var(--panel);z-index:1;max-width:260px}
 .cbox{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
 .center{text-align:center}
 .right{text-align:right}
 
-/* compact one-line lists (branches / remotes) */
+/* ---------- compact one-line lists (branches / remotes) ---------- */
 .mini-list{max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:8px}
 .mini-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
-  padding:6px 10px;border-bottom:1px solid var(--border)}
+  padding:6px 10px;border-bottom:1px solid var(--border);min-width:0}
 .mini-row:last-child{border-bottom:none}
 .mini-row.cur{background:rgba(79,140,255,.09)}
 
-/* commit history cards (look good on desktop AND mobile) */
+/* ---------- commit history cards ---------- */
 .commitlist{display:flex;flex-direction:column}
-.commit{padding:11px 2px;border-bottom:1px solid var(--border)}
+.commit{padding:11px 2px;border-bottom:1px solid var(--border);min-width:0}
 .commit:last-child{border-bottom:none}
 .c-row1{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .c-hash{font-size:12px;color:#9fd08a}
-.c-when{margin-left:auto;font-size:11.5px}
+.c-when{margin-left:auto;font-size:11.5px;text-align:right}
 .c-msg{font-size:13.5px;font-weight:600;margin-top:3px;overflow-wrap:anywhere}
 .c-who{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:12.5px}
 .c-who .nm{font-weight:600}
 .c-who .em{color:var(--muted);word-break:break-all}
 
-/* side header (logo + logout) */
-.side .side-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+/* ---------- repo page (redesigned) ---------- */
+.page-head{margin-bottom:16px}
+.backlink{font-size:12.5px;color:var(--muted)}
+.backlink:hover{color:var(--accent);text-decoration:none}
+.pathline{color:var(--muted);font-size:11.5px;margin:2px 0 8px;overflow-wrap:anywhere}
+.badgeline{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:10px 12px;margin-bottom:16px}
+.toolbar-label{font-size:11px;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.05em;margin-right:4px}
+
+.output-card{border-left:3px solid var(--accent)}
+.out-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.out-head h2{margin:0}
+.out-pre{max-height:480px}
+.diffstat{margin-top:10px;max-height:180px}
+
+.runbar{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.runbar .field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.runbar .field label{font-size:11px;color:var(--muted);font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em}
+.runbar .field select{min-width:210px}
+.runbtn button{padding:9px 22px}
+
+.filelist table td{padding:6px 10px}
+.st-code{width:44px;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+  color:var(--muted);white-space:nowrap}
+.st-mod{color:var(--warn);font-weight:700}
+.st-new{color:var(--ok);font-weight:700}
+.st-del{color:var(--err);font-weight:700}
+.st-file{overflow-wrap:anywhere;color:#c3cad8;font-size:12px}
 
 /* ---------- phones ---------- */
 @media(max-width:760px){
@@ -132,6 +169,7 @@ label.ck{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var
   .side nav a{padding:7px 11px;border-radius:8px;white-space:nowrap;margin:0;font-size:12.5px}
   .main{padding:12px 12px 60px}
   h1{font-size:17px}
+  h2{font-size:14px}
   .lead{font-size:12.5px}
   .stats{flex-wrap:wrap;gap:8px}
   .stat{flex:1 1 30%;padding:10px 12px}
@@ -141,9 +179,16 @@ label.ck{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var
   .row{gap:8px}
   .btn{padding:9px 14px}
   .btn.sm{padding:8px 11px}
+  .toolbar{gap:6px;padding:10px 8px}
+  .toolbar form{width:100%}
+  .toolbar form .btn{width:100%}
   .runbar .field{width:100%}
+  .runbar .field select,.runbar .field input{width:100%}
   .runbar select,.runbar input{width:100%}
+  .runbtn{width:100%}
+  .runbtn button{width:100%}
   pre{max-height:300px;font-size:11.5px}
+  .out-pre{max-height:260px}
 }
 
 /* very small phones */
