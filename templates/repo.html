@@ -14,6 +14,7 @@
     {% if r.behind %}<span class="badge b-warn">&darr; {{ r.behind }} behind</span>{% endif %}
     {% if r.hook == 'installed' %}<span class="badge b-ok">Hook: Enforced</span>
     {% elif r.hook == 'stale' %}<span class="badge b-warn">Hook: Out of date</span>
+    {% elif r.hook == 'empty' %}<span class="badge b-warn">Hook: Broken &mdash; press Write hook to repair</span>
     {% elif r.hook == 'foreign' %}<span class="badge b-warn">Hook: Custom (untouched)</span>
     {% else %}<span class="badge b-muted">Hook: none</span>{% endif %}
     {% if not r.users %}<span class="badge b-err">No authorized users</span>{% endif %}

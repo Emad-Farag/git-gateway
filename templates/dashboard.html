@@ -40,6 +40,7 @@
           {% else %}<span class="badge b-err"> nobody</span>{% endif %}</td>
       <td>{% if r.hook == 'installed' %}<span class="badge b-ok">Enforced</span>
           {% elif r.hook == 'stale' %}<span class="badge b-warn">Out of date</span>
+          {% elif r.hook == 'empty' %}<span class="badge b-warn">Broken</span>
           {% elif r.hook == 'foreign' %}<span class="badge b-warn">Custom hook</span>
           {% else %}<span class="badge b-muted">None</span>{% endif %}</td>
       <td class="right">

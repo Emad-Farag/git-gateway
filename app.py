@@ -255,8 +255,10 @@ def hook_state(path, st=None):
         content = open(hook, encoding="utf-8", errors="ignore").read()
     except Exception:
         return "missing"
+    if len(content.strip()) <= 2:
+        return "empty"            # broken stub (e.g. saved by an editor) — repair it
     if HOOK_MARKER not in content:
-        return "foreign"          # someone else's hook — leave it alone
+        return "foreign"          # someone else's real hook — leave it alone
     try:
         have = sorted(l for l in open(allow, encoding="utf-8").read().splitlines() if l)
     except Exception:
@@ -357,7 +359,9 @@ def install_hook(repo_path, emails):
             content = ""
         if HOOK_MARKER in content:
             need_write = content.strip() != HOOK_TEMPLATE.strip()  # ours: keep in sync
-        # foreign hook: leave it alone (shown as "Custom hook" in the GUI)
+        elif len(content.strip()) <= 2:
+            need_write = True    # broken/empty stub — replace it
+        # else: foreign hook — leave it alone (shown as "Custom hook" in the GUI)
     if need_write:
         with open(hook, "w", encoding="utf-8", newline="\n") as f:
             f.write(HOOK_TEMPLATE)
