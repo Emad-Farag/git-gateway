@@ -95,6 +95,13 @@ label.ck{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var
 .center{text-align:center}
 .right{text-align:right}
 
+/* compact one-line lists (branches / remotes) */
+.mini-list{max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:8px}
+.mini-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+  padding:6px 10px;border-bottom:1px solid var(--border)}
+.mini-row:last-child{border-bottom:none}
+.mini-row.cur{background:rgba(79,140,255,.09)}
+
 /* commit history cards (look good on desktop AND mobile) */
 .commitlist{display:flex;flex-direction:column}
 .commit{padding:11px 2px;border-bottom:1px solid var(--border)}

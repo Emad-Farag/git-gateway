@@ -751,8 +751,26 @@ def repo():
                 "hash": p[4][:8], "hash_full": p[4], "msg": p[5], "ts": int(p[0])})
 
     statuses = run(["git", "status", "--porcelain"], cwd=path)["out"].splitlines()
-    branches = run(["git", "branch", "-vv"], cwd=path)["out"].splitlines()
-    remotes  = run(["git", "remote", "-v"], cwd=path)["out"].splitlines()
+
+    branches, remotes = [], []
+    for line in run(["git", "branch", "-vv"], cwd=path)["out"].splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        current = line.startswith("*")
+        line = line.lstrip("* ").strip()
+        m = re.search(r"\[([^\]]+)\]", line)
+        tracking = m.group(1) if m else ""
+        note = line.split("]", 1)[-1].strip() if m else ""
+        parts = line.split()
+        h = parts[1] if len(parts) > 1 and re.match(r"^[0-9a-f]{7,40}$", parts[1]) else ""
+        branches.append({"current": current, "name": parts[0], "head": h,
+                         "tracking": tracking, "note": note})
+    for line in run(["git", "remote", "-v"], cwd=path)["out"].splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            remotes.append({"name": parts[0], "url": parts[1],
+                            "dir": parts[2].strip("()") if len(parts) > 2 else ""})
     diffstat = run(["git", "diff", "--stat"], cwd=path)
 
     return render_template("repo.html", r=r, commits=commits, statuses=statuses,
