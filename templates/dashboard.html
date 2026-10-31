@@ -64,21 +64,23 @@
 
 <h2>Recent commits &mdash; all applications</h2>
 <div class="card">
-  <div class="wrap">
-  <table>
-    <tr><th>When</th><th>Author</th><th>E-mail</th><th>Application</th><th>Commit</th><th>Message</th></tr>
+  <div class="commitlist">
     {% for c in feed %}
-    <tr>
-      <td class="help">{{ c.when }}</td>
-      <td>{{ c.author }}</td>
-      <td class="help">{{ c.email }}</td>
-      <td><a href="{{ url_for('repo', p=c.path) }}">{{ c.repo }}</a></td>
-      <td><code>{{ c.hash }}</code></td>
-      <td>{{ c.msg }}</td>
-    </tr>
+    <div class="commit">
+      <div class="c-row1">
+        <code class="c-hash mono" title="Full hash: {{ c.hash_full }}">{{ c.hash }}</code>
+        <a href="{{ url_for('repo', p=c.path) }}"><span class="badge b-info">{{ c.repo }}</span></a>
+        <span class="help c-when">{{ c.when }}</span>
+      </div>
+      <div class="c-msg">{{ c.msg }}</div>
+      <div class="c-who">
+        <span class="nm">&#128100; {{ c.author }}</span>
+        <span class="em">{{ c.email }}</span>
+      </div>
+    </div>
+    {% else %}
+    <div class="help center" style="padding:16px 0">No commits yet.</div>
     {% endfor %}
-    {% if not feed %}<tr><td colspan="6" class="help center">No commits yet.</td></tr>{% endif %}
-  </table>
   </div>
 </div>
 {% endblock %}

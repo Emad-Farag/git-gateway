@@ -10,7 +10,12 @@
 {% block body %}
 <div class="shell">
   <aside class="side">
-    <div class="logo"><span class="dot"></span> Git Gateway</div>
+    <div class="side-top">
+      <div class="logo"><span class="dot"></span> Git Gateway</div>
+      <form method="post" action="{{ url_for('logout') }}">
+        {{ csrf_field() }}<button class="btn ghost sm">Log out</button>
+      </form>
+    </div>
     <div class="sub">SSH-identity controlled git access</div>
     <nav>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint=='dashboard' }}">&#9641;&nbsp; Applications</a>
@@ -20,9 +25,6 @@
     </nav>
     <div class="foot">
       Server: {{ ssh_path }}<br>State: {{ data_dir }}
-      <form method="post" action="{{ url_for('logout') }}" style="margin-top:10px">
-        {{ csrf_field() }}<button class="btn ghost sm">Log out</button>
-      </form>
     </div>
   </aside>
   <main class="main">

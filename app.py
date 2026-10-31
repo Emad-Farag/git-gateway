@@ -577,14 +577,14 @@ def dashboard():
 
     feed = []
     for r in repos:
-        lg = run(["git", "log", "-6", "--pretty=format:%at\x1f%an\x1f%ae\x1f%h\x1f%s"],
+        lg = run(["git", "log", "-6", "--pretty=format:%at\x1f%an\x1f%ae\x1f%H\x1f%s"],
                  cwd=r["path"], timeout=20)
         for line in lg["out"].splitlines():
             p = line.split("\x1f")
             if len(p) == 5:
                 feed.append({"repo": r["name"], "path": r["path"], "author": p[1],
-                             "email": p[2], "hash": p[3][:8], "msg": p[4],
-                             "when": rel_time(p[0]), "ts": int(p[0])})
+                             "email": p[2], "hash": p[3][:8], "hash_full": p[3],
+                             "msg": p[4], "when": rel_time(p[0]), "ts": int(p[0])})
     feed.sort(key=lambda x: -x["ts"])
 
     return render_template("dashboard.html", repos=repos, feed=feed[:40],

@@ -123,25 +123,27 @@
   </div>
   <div class="card">
     <h2>Commit history &mdash; who did what</h2>
-    <div class="wrap">
-    <table>
-      <tr><th>When</th><th>Hash</th><th>Author</th><th>E-mail</th><th>Date</th><th>Message</th></tr>
+    <div class="commitlist">
       {% for c in commits %}
-      <tr>
-        <td class="help">{{ c.when }}</td>
-        <td><code title="Full hash: {{ c.hash_full }}">{{ c.hash }}</code></td>
-        <td><b>{{ c.author }}</b></td>
-        <td class="help">{% if c.email in r.users %}<span class="badge b-ok mono">{{ c.email }}</span>
-            {% else %}<span class="badge b-warn mono">{{ c.email }}</span>{% endif %}</td>
-        <td class="help">{{ c.date }}</td>
-        <td>{{ c.msg }}</td>
-      </tr>
+      <div class="commit">
+        <div class="c-row1">
+          <code class="c-hash mono" title="Full hash: {{ c.hash_full }}">{{ c.hash }}</code>
+          {% if c.email in r.users %}<span class="badge b-ok">{{ c.email }}</span>
+          {% else %}<span class="badge b-warn">{{ c.email }}</span>{% endif %}
+          <span class="help c-when">{{ c.date }} &middot; {{ c.when }}</span>
+        </div>
+        <div class="c-msg">{{ c.msg }}</div>
+        <div class="c-who">
+          <span class="nm">&#128100; {{ c.author }}</span>
+        </div>
+      </div>
+      {% else %}
+      <div class="help center" style="padding:16px 0">No commits yet.</div>
       {% endfor %}
-      {% if not commits %}<tr><td colspan="6" class="center help">No commits yet.</td></tr>{% endif %}
-    </table>
     </div>
-    <p class="help">Green e-mail = currently authorized here. Orange = committed
-    before being removed from the allowlist.</p>
+    {% if commits %}<p class="help" style="margin-top:10px">Green e-mail = currently authorized here.
+    Orange = committed before being removed from the allowlist.
+    Hover a hash to see the full one.</p>{% endif %}
   </div>
 </div>
 {% endblock %}
