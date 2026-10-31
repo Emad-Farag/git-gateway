@@ -99,6 +99,60 @@ def state_set(st):
 
 
 # --------------------------------------------------------------------------
+# GUI accounts (username + password + role) — for the web panel itself
+# Roles: "admin"   full control (permissions, hooks, users, settings, all git cmds)
+#        "viewer"  read-only   (browse applications & commits, safe read cmds only)
+# --------------------------------------------------------------------------
+USERS_PATH = os.path.join(DATA_DIR, "users.json")
+ROLES      = ("admin", "viewer")
+
+
+def _pw_hash(pw, salt):
+    return hashlib.sha256((salt + pw).encode()).hexdigest()
+
+
+def gui_users():
+    try:
+        return json.load(open(USERS_PATH, encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_gui_users(users):
+    with LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        json.dump(users, open(USERS_PATH, "w", encoding="utf-8"), indent=2)
+
+
+def find_gui_user(username):
+    for u in gui_users():
+        if u.get("username") == username:
+            return u
+    return None
+
+
+def create_gui_user(username, password, role):
+    users = [u for u in gui_users() if u.get("username") != username]
+    salt = secrets.token_hex(16)
+    users.append({"username": username, "salt": salt,
+                  "hash": _pw_hash(password, salt), "role": role})
+    save_gui_users(users)
+
+
+def gui_admins_count():
+    return sum(1 for u in gui_users() if u.get("role") == "admin")
+
+
+def migrate_legacy_admin_password():
+    """Versions before 1.1 stored a single admin password in config.json —
+    turn it into a proper 'admin' account so nothing is lost on upgrade."""
+    if gui_users() or not cfg_get("password_hash") or not cfg_get("password_salt"):
+        return
+    save_gui_users([{"username": "admin", "salt": cfg_get("password_salt"),
+                     "hash": cfg_get("password_hash"), "role": "admin"}])
+
+
+# --------------------------------------------------------------------------
 # Small helpers
 # --------------------------------------------------------------------------
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -499,29 +553,36 @@ def gate():
         tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
         if not hmac.compare_digest(tok, session.get("_csrf", "")):
             abort(400, "CSRF check failed")
-    if not cfg_get("password_hash"):
+    if request.method == "POST":
+        tok = request.form.get("csrf") or request.headers.get("X-CSRF") or ""
+        if not hmac.compare_digest(tok, session.get("_csrf", "")):
+            abort(400, "CSRF check failed")
+    if not gui_users():
+        migrate_legacy_admin_password()
+    if not gui_users():
         return redirect(url_for("setup"))
-    if not session.get("admin"):
+    if not session.get("user"):
         return redirect(url_for("login", next=request.path))
 
 
 # ---------------------- auth ----------------------
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    if cfg_get("password_hash"):
+    if gui_users():
         return redirect(url_for("login"))
     if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
         pw = request.form.get("pw", "")
+        if not re.match(r"^[a-zA-Z0-9_.-]{2,30}$", username):
+            flash("Username: 2-30 characters (letters, digits, . _ -).", "error")
+            return render_template("setup.html")
         if len(pw) < 6:
             flash("Password must be at least 6 characters.", "error")
             return render_template("setup.html")
-        salt = secrets.token_hex(16)
-        cfg_set(password_salt=salt,
-                password_hash=hashlib.sha256((salt + pw).encode()).hexdigest(),
-                secret=secrets.token_hex(32))
+        create_gui_user(username, pw, "admin")
         _load_secret()
         session.clear()
-        session["admin"] = True
+        session.update(user=username, role="admin")
         flash("Setup complete. Welcome to Git Gateway.", "success")
         return redirect(url_for("dashboard"))
     return render_template("setup.html")
@@ -530,15 +591,18 @@ def setup():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
+        username = request.form.get("username", "").strip().lower()
         pw = request.form.get("pw", "")
-        salt = cfg_get("password_salt", "")
-        if hmac.compare_digest(hashlib.sha256((salt + pw).encode()).hexdigest(),
-                               cfg_get("password_hash", "")):
-            session["admin"] = True
+        u = find_gui_user(username)
+        if u and hmac.compare_digest(_pw_hash(pw, u.get("salt", "")), u.get("hash", "")):
+            session["user"] = username
+            session["role"] = u.get("role", "viewer")
             session["_csrf"] = secrets.token_hex(16)
             nxt = request.args.get("next")
             return redirect(nxt if nxt and nxt.startswith("/") else url_for("dashboard"))
-        flash("Wrong password.", "error")
+        flash("Wrong username or password.", "error")
+    if not gui_users():
+        return redirect(url_for("setup"))
     return render_template("login.html")
 
 
@@ -550,18 +614,96 @@ def logout():
 
 @app.route("/password", methods=["POST"])
 def password():
-    salt = cfg_get("password_salt", "")
-    if not hmac.compare_digest(hashlib.sha256((salt + request.form.get("old", "")).encode()).hexdigest(),
-                               cfg_get("password_hash", "")):
+    """Change your OWN password."""
+    u = find_gui_user(session.get("user", ""))
+    if not u:
+        flash("Account not found.", "error")
+        return redirect(url_for("settings"))
+    if not hmac.compare_digest(_pw_hash(request.form.get("old", ""), u["salt"]), u["hash"]):
         flash("Current password is wrong.", "error")
         return redirect(url_for("settings"))
     new = request.form.get("new", "")
     if len(new) < 6:
         flash("New password too short (min 6 chars).", "error")
         return redirect(url_for("settings"))
-    cfg_set(password_hash=hashlib.sha256((salt + new).encode()).hexdigest())
+    users = gui_users()
+    for x in users:
+        if x["username"] == u["username"]:
+            x["hash"] = _pw_hash(new, x["salt"])
+    save_gui_users(users)
     flash("Password changed.", "success")
     return redirect(url_for("settings"))
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def w(*a, **k):
+        if session.get("role") != "admin":
+            flash("Admin access only — your account is read-only.", "error")
+            return redirect(url_for("dashboard"))
+        return fn(*a, **k)
+    return w
+
+
+# ---------------------- GUI account management (admin) ----------------------
+@app.route("/gui-users/add", methods=["POST"])
+@admin_required
+def gui_users_add():
+    username = request.form.get("username", "").strip().lower()
+    pw = request.form.get("pw", "")
+    role = request.form.get("role", "viewer")
+    if not re.match(r"^[a-zA-Z0-9_.-]{2,30}$", username):
+        flash("Invalid username (2-30 chars: letters, digits, . _ -).", "error")
+        return redirect(url_for("users"))
+    if len(pw) < 6:
+        flash("Password must be at least 6 characters.", "error")
+        return redirect(url_for("users"))
+    if role not in ROLES:
+        role = "viewer"
+    if find_gui_user(username):
+        flash("Username already exists.", "error")
+        return redirect(url_for("users"))
+    create_gui_user(username, pw, role)
+    flash("Account %s created (%s)." % (username, role), "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/gui-users/del", methods=["POST"])
+@admin_required
+def gui_users_del():
+    username = request.form.get("username", "").strip()
+    if username == session.get("user"):
+        flash("You cannot delete your own account.", "error")
+        return redirect(url_for("users"))
+    users = [u for u in gui_users() if u.get("username") != username]
+    if not any(u.get("role") == "admin" for u in users):
+        flash("Cannot remove the last admin account.", "error")
+        return redirect(url_for("users"))
+    if len(users) == len(gui_users()):
+        flash("Account not found.", "error")
+        return redirect(url_for("users"))
+    save_gui_users(users)
+    flash("Account %s deleted." % username, "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/gui-users/reset", methods=["POST"])
+@admin_required
+def gui_users_reset():
+    username = request.form.get("username", "").strip()
+    new = request.form.get("new", "")
+    if len(new) < 6:
+        flash("Password too short (min 6 chars).", "error")
+        return redirect(url_for("users"))
+    users = gui_users()
+    for x in users:
+        if x.get("username") == username:
+            x["hash"] = _pw_hash(new, x["salt"])
+            save_gui_users(users)
+            flash("Password of %s reset." % username, "success")
+            return redirect(url_for("users"))
+    flash("Account not found.", "error")
+    return redirect(url_for("users"))
 
 
 # ---------------------- dashboard ----------------------
@@ -594,6 +736,7 @@ def dashboard():
 
 
 @app.route("/scan", methods=["POST"])
+@admin_required
 def scan():
     found = find_repos()
     st = state_get()
@@ -607,6 +750,7 @@ def scan():
 
 
 @app.route("/hooks/refresh", methods=["POST"])
+@admin_required
 def hooks_refresh():
     n = refresh_hooks()
     flash("Hooks refreshed on %d repositories." % n, "success")
@@ -614,6 +758,7 @@ def hooks_refresh():
 
 
 @app.route("/hook/install", methods=["POST"])
+@admin_required
 def hook_install():
     repo = request.form.get("repo", "")
     if repo not in find_repos():
@@ -626,6 +771,7 @@ def hook_install():
 
 
 @app.route("/bashrc/install", methods=["POST"])
+@admin_required
 def bashrc_install():
     install_bashrc_block()
     flash("Identity script written and the .bashrc block installed. "
@@ -657,6 +803,7 @@ def users():
 
 
 @app.route("/users/add", methods=["POST"])
+@admin_required
 def users_add():
     em = request.form.get("email", "").strip().lower()
     if not EMAIL_RE.fullmatch(em):
@@ -672,6 +819,7 @@ def users_add():
 
 
 @app.route("/users/name", methods=["POST"])
+@admin_required
 def users_name():
     em, name = request.form.get("email", "").strip(), request.form.get("name", "").strip()
     st = state_get()
@@ -688,6 +836,7 @@ def users_name():
 
 
 @app.route("/users/del", methods=["POST"])
+@admin_required
 def users_del():
     em = request.form.get("email", "").strip()
     st = state_get()
@@ -716,6 +865,7 @@ def permissions():
 
 
 @app.route("/permissions/save", methods=["POST"])
+@admin_required
 def permissions_save():
     st, emails, changed = state_get(), all_emails(), 0
     for repo in find_repos():
@@ -790,6 +940,10 @@ def email_rows_for(path, st):
     return rows
 
 
+# commands a read-only (viewer) account may run
+VIEWER_OK = {"status", "log", "blame", "diff", "show", "branch", "describe"}
+
+
 @app.route("/repo/run", methods=["POST"])
 def repo_run():
     path = request.form.get("repo", "")
@@ -799,6 +953,9 @@ def repo_run():
         abort(404)
     if cmd not in ALLOWED_CMDS:
         abort(400, "Command not allowed: %s" % cmd)
+    if session.get("role") != "admin" and cmd not in VIEWER_OK:
+        flash("Your account is read-only: 'git %s' is not allowed." % cmd, "error")
+        return redirect(nxt)
     if cmd in NEEDS_CONFIRM and request.form.get("confirm") != "yes":
         flash("This action needs the confirm checkbox.", "error")
         return redirect(nxt)
@@ -814,6 +971,7 @@ def repo_run():
 
 
 @app.route("/repo/grant", methods=["POST"])
+@admin_required
 def repo_grant():
     """Quick toggle of one user on one repository."""
     path, email = request.form.get("repo", ""), request.form.get("email", "")
@@ -848,6 +1006,7 @@ def service_is_active():
 
 
 @app.route("/service/restart", methods=["POST"])
+@admin_required
 def service_restart():
     nxt = request.form.get("next") or url_for("settings")
     flash("Restarting the service at %s to apply the new port..." %
@@ -874,6 +1033,7 @@ def settings():
 
 
 @app.route("/settings/save", methods=["POST"])
+@admin_required
 def settings_save():
     roots = [os.path.expanduser(r.strip()) for r in
              request.form.get("scan_roots", "").splitlines() if r.strip()]
@@ -900,7 +1060,11 @@ def base_ctx():
             "key_status": "found" if os.path.isfile(SSH_KEYS) else "missing",
             "bashrc_state": bashrc_status(),
             "ssh_path": SSH_KEYS,
-            "data_dir": DATA_DIR}
+            "data_dir": DATA_DIR,
+            "me": session.get("user"),
+            "me_role": session.get("role", "viewer"),
+            "gui_users_list": gui_users() if session.get("role") == "admin" else [],
+            "viewer_ok": sorted(VIEWER_OK)}
 
 
 if __name__ == "__main__":

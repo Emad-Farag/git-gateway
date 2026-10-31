@@ -60,4 +60,50 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     <b>Rescan applications</b> &mdash; the user appears here automatically.</p>
   </div>
 </div>
+
+<div class="card">
+  <h2>GUI accounts (login to this panel) <span class="badge b-muted">{{ gui_users_list|length }}</span></h2>
+  {% if me_role == 'admin' %}
+  <p class="help">Roles: <b>admin</b> = full control (permissions, hooks, users, settings, all git commands).
+  <b>viewer</b> = read-only (browse applications &amp; commits + safe commands:
+  {% for c in viewer_ok %}<code>{{ c }}</code>{% if not loop.last %}, {% endif %}{% endfor %}).</p>
+  <div class="wrap">
+  <table>
+    <tr><th>Account</th><th>Role</th><th class="right">Actions</th></tr>
+    {% for u in gui_users_list %}
+    <tr>
+      <td><b>{{ u.username }}</b>{% if u.username == me %} <span class="badge b-info">you</span>{% endif %}</td>
+      <td>{% if u.role == 'admin' %}<span class="badge b-ok">admin</span>{% else %}<span class="badge b-muted">viewer</span>{% endif %}</td>
+      <td class="right">
+        <form method="post" action="{{ url_for('gui_users_reset') }}" class="inline row">
+          {{ csrf_field() }}
+          <input type="hidden" name="username" value="{{ u.username }}">
+          <input type="password" name="new" placeholder="New password" style="width:150px;padding:5px 8px" required>
+          <button class="btn ghost sm">Reset&nbsp;pw</button>
+        </form>
+        <form method="post" action="{{ url_for('gui_users_del') }}" class="inline">
+          {{ csrf_field() }}<input type="hidden" name="username" value="{{ u.username }}">
+          <button class="btn sm danger" {% if u.username == me %}disabled title="Cannot delete yourself"{% endif %}>Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <h2 style="margin-top:14px">Add account</h2>
+  <form method="post" action="{{ url_for('gui_users_add') }}" class="row">
+    {{ csrf_field() }}
+    <input type="text" name="username" placeholder="username" style="width:140px" required>
+    <input type="password" name="pw" placeholder="password (min 6)" style="width:160px" required>
+    <select name="role">
+      <option value="viewer">viewer (read-only)</option>
+      <option value="admin">admin (full)</option>
+    </select>
+    <button>Add account</button>
+  </form>
+  {% else %}
+  <p>You are signed in as <b>{{ me }}</b> with a <b>viewer</b> (read-only) account.
+  Ask an administrator to manage accounts.</p>
+  {% endif %}
+</div>
 {% endblock %}

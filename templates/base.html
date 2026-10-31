@@ -20,10 +20,13 @@
     <nav>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if request.endpoint=='dashboard' }}">&#9641;&nbsp; Applications</a>
       <a href="{{ url_for('users') }}" class="{{ 'active' if request.endpoint=='users' }}">&#9742;&nbsp; Users &amp; Keys</a>
+      {% if me_role == 'admin' %}
       <a href="{{ url_for('permissions') }}" class="{{ 'active' if request.endpoint=='permissions' }}">&#10003;&nbsp; Permissions</a>
       <a href="{{ url_for('settings') }}" class="{{ 'active' if request.endpoint=='settings' }}">&#9881;&nbsp; Settings</a>
+      {% endif %}
     </nav>
     <div class="foot">
+      Account: <b>{{ me }}</b> ({{ me_role }})<br>
       Server: {{ ssh_path }}<br>State: {{ data_dir }}
     </div>
   </aside>

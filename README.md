@@ -5,6 +5,23 @@ manual, error-prone procedure described in `git.txt` into an automatic,
 center-controlled system for **several developers working on the same server and
 the same applications**.
 
+## Accounts & roles (panel login)
+
+The GUI has its own user system (stored salted+sha256 in `~/.gitgateway/users.json`):
+
+| Role | Can do |
+|---|---|
+| **admin** | Everything: permissions, hooks, users & keys, settings, service restart, all 20 git commands, manage accounts |
+| **viewer** | Read-only: browse applications, commit history, status + safe commands (`status`, `log`, `blame`, `diff`, `show`, `branch`, `describe`, `tag`). Dangerous commands, permissions and settings are refused |
+
+- The **first admin account** is created on the very first visit (username + password).
+- Admins manage accounts in **Users & Keys → GUI accounts**: add, delete,
+  reset password, change role. You cannot delete yourself or the last admin.
+- Accounts created on old versions (single password in config.json) are
+  migrated automatically into an `admin` account.
+- Every user changes their own password in **Settings → Change admin password**
+  (it changes *your own* account's password).
+
 ## What it does
 
 | Manual workflow (git.txt) | Git Gateway |
@@ -113,9 +130,23 @@ git-gateway/
   install.sh        Linux installer (systemd)
 ~/.gitgateway/      runtime data
   config.json       port, admin password hash, scan roots
+  users.json        GUI panel accounts (username, role, salted hash)
   permissions.json  per-repo allowlists, manual users, display names
   identify.sh       SSH-identity autodetection (installed into .bashrc)
 ```
+
+## Updating the code (important)
+
+The systemd service runs **a copy** of the app at `~/.gitgateway/app` — editing
+files in `/opt/git-gateway` does nothing until they are copied and the service
+restarted. So after every change:
+
+```bash
+cd /opt/git-gateway
+bash update.sh            # copies app.py+templates+static, restarts the service
+```
+
+Then hard-refresh the browser (Ctrl+Shift+R) to bypass CSS cache.
 
 ## Uninstall
 
