@@ -25,6 +25,7 @@ import subprocess
 import hashlib
 import secrets
 import datetime
+import shutil
 from functools import wraps
 
 import markupsafe
@@ -43,6 +44,8 @@ SSH_KEYS    = os.path.join(HOME, ".ssh", "authorized_keys")
 BASHRC      = os.path.join(HOME, ".bashrc")
 HOOK_MARKER = "Git Gateway"
 IDENTIFY_SH = os.path.join(DATA_DIR, "identify.sh")
+SESSION_SH  = os.path.join(DATA_DIR, "ggw-session")
+WORK_ROOT   = os.path.join(DATA_DIR, "work")
 LOCK        = threading.RLock()
 
 DEFAULT_CONFIG = {
@@ -51,6 +54,9 @@ DEFAULT_CONFIG = {
     "password_salt": None,
     "secret": None,
     "scan_roots": [os.path.join(HOME, "frappe-bench", "apps")],
+    "sandbox_enabled": False,   # secure SSH sessions (bubblewrap) on/off
+    "sandbox_allow_fallback": False,  # allow a normal shell if bwrap is missing
+    "ssh_modes": {},            # email -> "sandbox" | "full"
 }
 
 DEFAULT_STATE = {
@@ -316,6 +322,7 @@ def parse_authorized_keys():
                 "type": line.split()[0] if line.split() else "",
                 "fingerprints": fps[i] if i < len(fps) else "",
                 "comment": line.split()[-1] if len(line.split()) > 2 else "",
+                "secure": 'command="' in line and SESSION_SH in line,
             })
     return entries
 
@@ -383,7 +390,19 @@ while [ "$_gg_i" -lt 25 ]; do
   _gg_p="$_gg_pp"
 done
 
-# --- 2) otherwise the SSH agent key decides (client GIT_* values ignored) ---
+# --- 2) sandboxed SSH session? identity is fixed server-side in
+#        authorized_keys and bound read-only into the session's namespace ---
+if [ -z "$via" ] && [ -r /run/ggw/session.env ]; then
+  GGW_SESSION_EMAIL=""; GGW_SESSION_NAME=""
+  . /run/ggw/session.env
+  if [ -n "$GGW_SESSION_EMAIL" ]; then
+    via="sandbox"
+    email="$GGW_SESSION_EMAIL"
+    name="$GGW_SESSION_NAME"
+  fi
+fi
+
+# --- 3) otherwise the SSH agent key decides (client GIT_* values ignored) ---
 if [ -z "$via" ] && [ -f "$HOME/.ssh/authorized_keys" ]; then
   _gg_keys="$HOME/.ssh/authorized_keys"
   _gg_fps="$(ssh-add -l 2>/dev/null | grep -v 'no identities')"
@@ -577,6 +596,247 @@ def install_bashrc_block():
                  "", cur, flags=re.S).rstrip("\n")
     with open(BASHRC, "w", encoding="utf-8", errors="ignore") as f:
         f.write(cur + "\n\n" + BASHRC_BLOCK)
+
+
+# --------------------------------------------------------------------------
+# Secure SSH sessions (bubblewrap) — one Linux user, isolation per SSH key
+# --------------------------------------------------------------------------
+# authorized_keys lines of sandboxed keys become:
+#   command="/home/<user>/.gitgateway/ggw-session <email>" ssh-ed25519 AAAA...
+# The e-mail is fixed server-side (authorized_keys is root-owned), so a
+# client cannot claim another identity. The session then runs inside a
+# bubblewrap mount namespace containing ONLY the apps granted to that
+# e-mail; the rest of the server is not visible (kernel-enforced).
+SESSION_SCRIPT_BODY = r'''#!/usr/bin/env python3
+# Git Gateway secure SSH session (auto-generated) - DO NOT EDIT
+# sshd runs this for keys whose authorized_keys line carries:
+#   command="<this script> <e-mail>"
+# The e-mail comes from a root-owned file, so the client cannot change it.
+import json
+import os
+import shutil
+import sys
+
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+HOME     = os.path.expanduser("~")
+CONFIG   = os.path.join(DATA_DIR, "config.json")
+STATE    = os.path.join(DATA_DIR, "permissions.json")
+WORK     = os.path.join(DATA_DIR, "work")
+SESSIONS = os.path.join(DATA_DIR, "sessions")
+BWRAP    = shutil.which("bwrap")
+
+
+def die(msg):
+    sys.stderr.write("\nGit Gateway: %s\n\n" % msg)
+    sys.exit(1)
+
+
+def load(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def slug(email):
+    return email.replace("@", "_at_").replace("/", "_")
+
+
+def main():
+    if len(sys.argv) < 2:
+        die("session identity missing — press 'Apply secure modes to keys' in the panel.")
+    email = sys.argv[1].strip().lower()
+    if "@" not in email or "/" in email or len(email) > 200:
+        die("invalid session identity")
+    cfg = load(CONFIG, {})
+    if not cfg.get("sandbox_enabled"):
+        die("secure SSH sessions are disabled in the panel (Users & Keys).")
+    if not BWRAP:
+        if cfg.get("sandbox_allow_fallback"):
+            os.environ["GGW_SESSION_EMAIL"] = email
+            die("bubblewrap missing — fallback would be an unprotected shell; "
+                "install it with: sudo apt install bubblewrap")
+        die("bubblewrap is not installed, so a secure session cannot start.\n"
+            "  sudo apt install bubblewrap\n"
+            "Then reload the panel and press 'Apply secure modes to keys'.")
+    st = load(STATE, {})
+    allowed = st.get("allowed", {}) or {}
+    roots = [os.path.realpath(r) for r in (cfg.get("scan_roots") or
+             [os.path.join(HOME, "frappe-bench", "apps")])]
+    apps = {}
+    for path, emails in allowed.items():
+        if email not in [str(e).lower() for e in emails]:
+            continue
+        if not os.path.isdir(path):
+            continue
+        real = os.path.realpath(path)
+        if not any(real == r or real.startswith(r + os.sep) for r in roots):
+            continue
+        apps[os.path.basename(path.rstrip("/"))] = real
+    apps = sorted(apps.items())
+
+    # writable per-developer home (holds ~/.vscode-server and the app mounts)
+    ws = os.path.join(WORK, slug(email))
+    os.makedirs(os.path.join(ws, "frappe-bench", "apps"), exist_ok=True)
+
+    name = (st.get("display_names") or {}).get(email) or \
+        email.split("@")[0].replace(".", " ").replace("_", " ").replace("-", " ").title()
+    name = name.replace('"', "").replace("\\", "")
+
+    # identity file for the commit hooks: bound read-only at /run/ggw/session.env
+    os.makedirs(SESSIONS, exist_ok=True)
+    env_path = os.path.join(SESSIONS, slug(email) + ".env")
+    fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write('GGW_SESSION_EMAIL=%s\nGGW_SESSION_NAME="%s"\n' % (email, name))
+    os.chmod(env_path, 0o600)
+
+    user = os.environ.get("USER") or os.path.basename(HOME)
+    argv = [BWRAP, "--unshare-user", "--unshare-pid", "--unshare-uts",
+            "--unshare-ipc", "--die-with-parent", "--new-session",
+            "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/bin", "/bin",
+            "--symlink", "usr/sbin", "/sbin",
+            "--symlink", "usr/lib", "/lib",
+            "--symlink", "usr/lib64", "/lib64",
+            "--dir", "/home",
+            "--bind", ws, HOME,
+            "--ro-bind", "/etc", "/etc",
+            "--ro-bind-try", "/opt", "/opt",
+            "--proc", "/proc", "--dev", "/dev",
+            "--tmpfs", "/dev/shm", "--tmpfs", "/tmp", "--tmpfs", "/run",
+            "--dir", "/run/ggw",
+            "--ro-bind", env_path, "/run/ggw/session.env"]
+    for app_name, app_path in apps:
+        argv += ["--bind", app_path, HOME + "/frappe-bench/apps/" + app_name]
+    sock = os.environ.get("SSH_AUTH_SOCK")
+    if sock and os.path.exists(sock):
+        argv += ["--bind", sock, "/run/ggw/agent.sock",
+                 "--setenv", "SSH_AUTH_SOCK", "/run/ggw/agent.sock"]
+    start = HOME + "/frappe-bench/apps/" + apps[0][0] if apps else HOME
+    argv += ["--chdir", start,
+             "--setenv", "HOME", HOME,
+             "--setenv", "USER", user, "--setenv", "LOGNAME", user,
+             "--setenv", "SHELL", "/bin/bash",
+             "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
+             "--setenv", "GIT_AUTHOR_NAME", name,
+             "--setenv", "GIT_AUTHOR_EMAIL", email,
+             "--setenv", "GIT_COMMITTER_NAME", name,
+             "--setenv", "GIT_COMMITTER_EMAIL", email,
+             "--setenv", "GGW_SESSION_EMAIL", email]
+    cmd = os.environ.get("SSH_ORIGINAL_COMMAND") or ""
+    if cmd:
+        argv += ["--", "bash", "-lc", cmd]      # VS Code Remote-SSH bootstrapping
+    else:
+        argv += ["--", "bash", "-l"]
+    os.execv(BWRAP, argv)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def install_session_script():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SESSION_SH, "w", encoding="utf-8", newline="\n") as f:
+        f.write(SESSION_SCRIPT_BODY)
+    os.chmod(SESSION_SH, 0o755)
+    os.makedirs(WORK_ROOT, exist_ok=True)
+
+
+def sandbox_status():
+    """Report whether kernel-level secure sessions can run on this server."""
+    bwrap = bool(shutil.which("bwrap"))
+    userns = True
+    try:
+        userns = open("/proc/sys/kernel/unprivileged_userns_clone").read().strip() != "0"
+    except Exception:
+        pass                     # sysctl absent → user namespaces allowed by default
+    return {"bwrap": bwrap, "userns": userns,
+            "script": os.path.isfile(SESSION_SH),
+            "enabled": bool(cfg_get("sandbox_enabled")),
+            "fallback": bool(cfg_get("sandbox_allow_fallback"))}
+
+
+def ssh_mode_of(email):
+    modes = cfg_get("ssh_modes") or {}
+    return modes.get(email, "sandbox")
+
+
+# SSH option prefix (comma/space separated key=value pairs) + key + comment
+KEY_TYPE_RE = (r"(?:ssh-(?:rsa|dss|ed25519(?:-sk)?)|ecdsa-sha2-nistp\d{3}(?:-sk)?"
+               r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp\d{3})@openssh\.com)")
+_KEY_LINE_RE = re.compile(r'(?:^|\s)(' + KEY_TYPE_RE + r')\s+([A-Za-z0-9+/=]{40,})\s*(.*)$')
+
+
+def _split_key_line(line):
+    """(options, type, base64, comment) — options may contain quotes/commas."""
+    s = line.strip()
+    m = _KEY_LINE_RE.search(s)
+    if not m:
+        return None
+    return (s[:m.start(1)].strip().strip(","), m.group(1), m.group(2),
+            (m.group(3) or "").strip())
+
+
+def _strip_our_command(opts):
+    """Remove any command="..." option (ours or a previous one), keep the rest."""
+    o = re.sub(r'(?:^|,)\s*command="[^"]*"', "", opts or "")
+    o = re.sub(r",\s*,", ",", o).strip()
+    return o.strip(",")
+
+
+def _sandbox_option(email):
+    return 'command="%s %s"' % (SESSION_SH, email)
+
+
+def sync_authorized_key_modes():
+    """Rewrite authorized_keys so every key gets the session mode of its
+    e-mail: sandboxed keys run through ggw-session, 'full' keys get a normal
+    login shell. Preserves other options and the key itself. A key that already
+    carries a command= from ANOTHER tool is left untouched (like a custom hook)."""
+    if not os.path.isfile(SSH_KEYS):
+        return 0
+    lines = open(SSH_KEYS, encoding="utf-8", errors="ignore").read().splitlines()
+    out, changed = [], 0
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#"):
+            out.append(line)
+            continue
+        parts = _split_key_line(s)
+        if not parts:
+            out.append(line)
+            continue
+        opts, ktype, b64, comment = parts
+        foreign = re.search(r'(?:^|,)\s*command="([^"]*)"', opts)
+        if foreign and SESSION_SH not in foreign.group(1):
+            out.append(line)          # another tool owns this key — do not touch
+            continue
+        emails = [e.lower() for e in EMAIL_RE.findall(s)]
+        email = emails[0] if emails else ""
+        base = _strip_our_command(opts)
+        if email and ssh_mode_of(email) == "sandbox":
+            new_opts = (base + "," if base else "") + _sandbox_option(email)
+        else:
+            new_opts = base
+        new_line = ((new_opts + " ") if new_opts else "") + ktype + " " + b64 + \
+                   ((" " + comment) if comment else "")
+        if new_line != s:
+            changed += 1
+        out.append(new_line)
+    if changed:
+        _backup_authorized_keys()
+        with LOCK:
+            open(SSH_KEYS, "w", encoding="utf-8", newline="\n").write(
+                "\n".join(out) + ("\n" if out else ""))
+        try:
+            os.chmod(SSH_KEYS, 0o600)
+        except Exception:
+            pass
+    return changed
 
 
 # --------------------------------------------------------------------------
@@ -996,6 +1256,7 @@ def users():
     st = state_get()
     keys = parse_authorized_keys()
     ssh_set = ssh_emails()
+    modes = cfg_get("ssh_modes") or {}
     rows = []
     for em in sorted(ssh_set | set(st["manual_emails"])):
         mine = [k for k in keys if em in k["emails"]]
@@ -1003,12 +1264,15 @@ def users():
             "email": em,
             "name": display_name_of(em, st),
             "has_key": em in ssh_set,
+            "mode": "full" if modes.get(em) == "full" else "sandbox",
             "fingerprints": [k["fingerprints"] or "— (fingerprint unavailable)" for k in mine] or [],
             "comment": mine[0]["comment"] if mine else "",
             "repos": [os.path.basename(p) for p, lst in st["allowed"].items() if em in lst],
             "repos_num": sum(1 for lst in st["allowed"].values() if em in lst),
         })
-    return render_template("users.html", rows=rows, keys=keys, **base_ctx())
+    return render_template("users.html", rows=rows, keys=keys,
+                           insecure_keys=sum(1 for k in keys if not k["secure"]),
+                           sandbox=sandbox_status(), **base_ctx())
 
 
 @app.route("/users/add", methods=["POST"])
@@ -1060,7 +1324,6 @@ def users_del():
 
 
 # ---------------------- authorized_keys management ----------------------
-KEY_TYPE_RE = r"(?:ssh-(?:rsa|dss|ed25519(?:-sk)?)|ecdsa-sha2-nistp\d{3}(?:-sk)?|sk-(?:ssh-ed25519|ecdsa-sha2-nistp\d{3})@openssh\.com)"
 
 
 def _backup_authorized_keys():
@@ -1128,6 +1391,8 @@ def keys_add():
           "press Rescan applications so repositories see it too. "
           "A backup of the previous file was saved as authorized_keys.ggw-bak."
           % (ktype, email[0]), "success")
+    if cfg_get("sandbox_enabled"):
+        sync_authorized_key_modes()
     return redirect(url_for("users"))
 
 
@@ -1155,6 +1420,75 @@ def keys_del():
           "Its e-mail no longer comes from SSH; if it was granted repositories, "
           "its access remains until you untick it on the Permissions page."
           % idx, "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/ssh/mode", methods=["POST"])
+@admin_required
+def ssh_mode():
+    """Set one e-mail's SSH session mode and rewrite its authorized_keys line."""
+    email = (request.form.get("email") or "").strip().lower()
+    mode  = request.form.get("mode") or "sandbox"
+    if not EMAIL_RE.fullmatch(email):
+        flash("Invalid e-mail address.", "error")
+        return redirect(url_for("users"))
+    if mode not in ("sandbox", "full"):
+        abort(400, "Bad SSH mode")
+    modes = dict(cfg_get("ssh_modes") or {})
+    modes[email] = mode
+    cfg_set(ssh_modes=modes)
+    changed = sync_authorized_key_modes()
+    if mode == "sandbox":
+        flash("%s now gets a SECURE SSH session: only its granted applications "
+              "are visible, the rest of the server is hidden by the kernel "
+              "(authorized_keys updated%s)." %
+              (email, ", %d key line(s) rewritten" % changed if changed else ""),
+              "success")
+    else:
+        flash("%s now gets a FULL login shell (no sandbox). Only give this to "
+              "the server administrator." % email, "warning")
+    return redirect(url_for("users"))
+
+
+@app.route("/ssh/apply", methods=["POST"])
+@admin_required
+def ssh_apply():
+    """Install the session script and (re)write every sandboxed key line."""
+    install_session_script()
+    changed = sync_authorized_key_modes()
+    ready = sandbox_status()
+    if not ready["bwrap"]:
+        flash("Session script written, but bubblewrap is NOT installed on this "
+              "server — sandboxed keys cannot connect until you run "
+              "'sudo apt install bubblewrap'.", "error")
+    else:
+        flash("Session script installed; %d authorized_keys line(s) updated. "
+              "New SSH sessions are isolated per key." % changed, "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/ssh/toggle", methods=["POST"])
+@admin_required
+def ssh_toggle():
+    enabled = request.form.get("enabled") == "1"
+    ready = sandbox_status()
+    if enabled and not (ready["bwrap"] and ready["userns"]):
+        flash("Cannot enable secure SSH sessions: %s" %
+              ("bubblewrap is not installed (sudo apt install bubblewrap)."
+               if not ready["bwrap"] else
+               "unprivileged user namespaces are disabled on this kernel."),
+              "error")
+        return redirect(url_for("users"))
+    cfg_set(sandbox_enabled=enabled)
+    changed = 0
+    if enabled:
+        install_session_script()
+        changed = sync_authorized_key_modes()
+    flash(("Secure SSH sessions ENABLED — %d key line(s) rewritten. "
+           "Test with a developer key before announcing it." % changed)
+          if enabled else
+          "Secure SSH sessions DISABLED — sandboxed keys cannot connect "
+          "(re-enable here).", "success" if enabled else "info")
     return redirect(url_for("users"))
 
 

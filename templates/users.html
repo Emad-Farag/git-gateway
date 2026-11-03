@@ -9,7 +9,7 @@ repository permission can never commit &mdash; the hook blocks it.</p>
 <div class="card">
   <div class="wrap">
   <table>
-    <tr><th>E-mail</th><th>Display name</th><th>Identity</th><th>Fingerprint</th><th>Repositories</th><th class="right">Actions</th></tr>
+    <tr><th>E-mail</th><th>Display name</th><th>Identity</th><th>SSH session</th><th>Fingerprint</th><th>Repositories</th><th class="right">Actions</th></tr>
     {% for u in rows %}
     <tr>
       <td><b>{{ u.email }}</b></td>
@@ -23,6 +23,21 @@ repository permission can never commit &mdash; the hook blocks it.</p>
       </td>
       <td>{% if u.has_key %}<span class="badge b-ok">SSH key</span>
           {% else %}<span class="badge b-warn">Manual</span>{% endif %}</td>
+      <td>
+        {% if u.mode == 'full' %}
+          <span class="badge b-err">Full shell</span>
+        {% else %}
+          <span class="badge b-ok">&#128274; Sandboxed</span>
+        {% endif %}
+        {% if u.has_key %}
+        <form method="post" action="{{ url_for('ssh_mode') }}" class="inline" style="margin-left:6px">
+          {{ csrf_field() }}
+          <input type="hidden" name="email" value="{{ u.email }}">
+          <input type="hidden" name="mode" value="{{ 'sandbox' if u.mode == 'full' else 'full' }}">
+          <button class="btn ghost sm">{{ 'Sandbox it' if u.mode == 'full' else 'Allow full shell' }}</button>
+        </form>
+        {% endif %}
+      </td>
       <td class="help mono">{% for fp in u.fingerprints %}<code>{{ fp }}</code><br>{% endfor %}{% if not u.fingerprints %}&mdash;{% endif %}</td>
       <td>{% if u.repos %}{% for r in u.repos %}<span class="chip">{{ r }}</span>{% endfor %}
           {% else %}<span class="badge b-err"> none &mdash; commits blocked</span>{% endif %}</td>
@@ -33,10 +48,69 @@ repository permission can never commit &mdash; the hook blocks it.</p>
       </td>
     </tr>
     {% endfor %}
-    {% if not rows %}<tr><td colspan="6" class="center help">
+    {% if not rows %}<tr><td colspan="7" class="center help">
       No e-mails found in <code>~/.ssh/authorized_keys</code>. Add keys there (recommended) or a manual user below.</td></tr>{% endif %}
   </table>
   </div>
+</div>
+
+<div class="card">
+  <h2>Secure SSH sessions
+    {% if not sandbox.bwrap %}<span class="badge b-err">bubblewrap missing</span>
+    {% elif not sandbox.userns %}<span class="badge b-err">namespaces disabled</span>
+    {% elif sandbox.enabled %}<span class="badge b-ok">Enabled</span>
+    {% else %}<span class="badge b-muted">Disabled</span>{% endif %}
+  </h2>
+  <p class="help">One Linux account, isolation <b>per SSH key</b>.
+  Each developer's key starts the session through a small server-side launcher that
+  fixes the e-mail (the line lives in root-owned <code>authorized_keys</code>, so it
+  cannot be spoofed), and the whole session then runs inside a kernel
+  <b>mount namespace</b> that contains <b>only the applications granted to that
+  e-mail</b> on the Permissions page. Everything else on the server — other apps,
+  their files, the rest of the home directory — is simply not visible inside the
+  session. VS Code Remote-SSH keeps working; its commands run inside the same
+  isolated session.</p>
+  <ul class="help">
+    <li>bubblewrap: {% if sandbox.bwrap %}<span class="badge b-ok">installed</span>{% else %}<span class="badge b-err">missing</span> — <code>sudo apt install bubblewrap</code>{% endif %}</li>
+    <li>user namespaces: {% if sandbox.userns %}<span class="badge b-ok">available</span>{% else %}<span class="badge b-err">disabled</span>{% endif %}</li>
+    <li>session launcher: {% if sandbox.script %}<span class="badge b-ok">installed</span>{% else %}<span class="badge b-warn">not installed</span>{% endif %}</li>
+  </ul>
+  {% if sandbox.enabled and insecure_keys %}
+  <p class="help"><span class="badge b-warn">attention</span>
+  {{ insecure_keys }} key line(s) are NOT sandboxed (no launcher yet — added
+  outside the panel, or from an older version). Press <b>Install / re-apply to
+  all keys</b>, or those keys still get a full shell.</p>
+  {% endif %}
+  {% if me_role == 'admin' %}
+  <div class="row">
+    <form method="post" action="{{ url_for('ssh_apply') }}">
+      {{ csrf_field() }}
+      <button class="btn ghost">&#128274; Install / re-apply to all keys</button>
+    </form>
+    <form method="post" action="{{ url_for('ssh_toggle') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="enabled" value="{{ '0' if sandbox.enabled else '1' }}">
+      <button class="{{ 'btn danger' if sandbox.enabled else 'btn' }}">
+        {{ 'Disable secure sessions' if sandbox.enabled else 'Enable secure sessions' }}
+      </button>
+    </form>
+  </div>
+  <p class="help">Grant applications per developer on the <a href="{{ url_for('permissions') }}">Permissions</a>
+  page — that same list decides what their session can see. While disabled, sandboxed
+  keys cannot connect at all (fail closed).</p>
+  <details>
+    <summary class="cursor">How the isolation works (and its honest limits)</summary>
+    <p class="help">The launcher is a forced command on each key; the e-mail is read from the key
+    line, never from the client. The session is a bubblewrap namespace: system binaries are
+    read-only, the home is a per-developer workspace, and each granted app is bind-mounted into
+    it. Nothing else exists in that namespace — this is kernel enforcement, not a shell wrapper
+    that could be bypassed with another command.</p>
+    <p class="help"><b>Limit:</b> a developer can read the source of every application you grant
+    them (that is what developing means), but nothing beyond that list. Disable password SSH
+    logins on the server (key-only auth), otherwise the shared account password would bypass
+    the per-key launcher.</p>
+  </details>
+  {% endif %}
 </div>
 
 <div class="grid2">
@@ -68,13 +142,15 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     Never paste a <b>private</b> key (private keys stay on the developer's machine).</p>
     <div class="wrap">
     <table>
-      <tr><th>#</th><th>Type</th><th>E-mail</th><th>Fingerprint</th><th class="right">Actions</th></tr>
+      <tr><th>#</th><th>Type</th><th>E-mail</th><th>Session</th><th>Fingerprint</th><th class="right">Actions</th></tr>
       {% for k in keys %}
       <tr>
         <td>{{ k.index }}</td>
         <td class="mono">{{ k.type }}</td>
         <td>{% if k.emails %}{% for e in k.emails %}<span class="chip">{{ e }}</span>{% endfor %}
             {% else %}<span class="badge b-warn">no e-mail in comment</span>{% endif %}</td>
+        <td>{% if k.secure %}<span class="badge b-ok">&#128274; sandboxed</span>
+            {% else %}<span class="badge b-muted">normal</span>{% endif %}</td>
         <td class="help mono">{{ k.fingerprints[:44] or '—' }}</td>
         <td class="right">
           <form method="post" action="{{ url_for('keys_del') }}" class="inline"
@@ -86,7 +162,7 @@ repository permission can never commit &mdash; the hook blocks it.</p>
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="help">No keys in the file yet — add one below.</td></tr>
+      <tr><td colspan="6" class="help">No keys in the file yet — add one below.</td></tr>
       {% endfor %}
     </table>
     </div>

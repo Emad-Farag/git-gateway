@@ -25,6 +25,29 @@ the same applications**, with every commit linked to a verified SSH identity.
   application, save, hooks update instantly.
 - A user with no permissions anywhere has **every commit rejected**.
 
+### Secure SSH sessions (one Linux account, isolation per SSH key)
+- Without changing how developers connect (`ssh user@server`, VS Code
+  Remote-SSH), each **SSH key** can be bound to a session that sees **only the
+  applications granted to its e-mail**.
+- The identity is fixed server-side: the key's line in the root-owned
+  `authorized_keys` gets
+  `command="~/.gitgateway/ggw-session <e-mail>"`, so a client cannot claim
+  another e-mail.
+- The session runs inside a **bubblewrap mount namespace**: system binaries are
+  read-only, the home is a per-developer workspace, granted apps are
+  bind-mounted into it, and everything else on the server is **not visible**
+  (kernel-enforced — not a shell wrapper that another command could bypass).
+- VS Code Remote-SSH keeps working: its bootstrap commands run through the same
+  forced command, inside the same namespace.
+- Panel controls: per-user **Sandboxed / Full shell** switch, *Install /
+  re-apply to all keys*, and an on/off toggle with a readiness check
+  (bubblewrap installed, user namespaces enabled, launcher installed).
+- Fails closed: if bubblewrap is missing, sandboxed keys cannot connect at all.
+  Keys that already carry `command=` from another tool are never touched.
+- The commit hooks also trust the session identity (bound read-only at
+  `/run/ggw/session.env`), so commits stay correctly stamped — the identity
+  cannot be forged by exporting variables.
+
 ### Automatic enforcement (git hooks)
 - Each configured repository gets a generated hook pair
   (`pre-commit` + `post-commit`) that both source a shared verifier
@@ -95,6 +118,10 @@ the same applications**, with every commit linked to a verified SSH identity.
 - `authorized_keys` changes keep a backup copy (`authorized_keys.ggw-bak`).
 - Removing a hook only removes hooks written by Git Gateway — a real custom
   hook is never deleted silently.
+- Secure SSH sessions require `bubblewrap` and enabled user namespaces:
+  `sudo apt install bubblewrap`, then *Users & Keys → Install / re-apply to
+  all keys*. Keep SSH **key-only** on the server (`PasswordAuthentication no`):
+  a password login would bypass the per-key launcher.
 
 ### Web service
 - Runs as **`git-gateway.service`** (systemd): always running, starts on
@@ -138,7 +165,12 @@ The installer:
    (`.git/hooks/.ggw-allowed`).
 4. **Settings → Install identity script** — one-time. It appends the managed
    `# >>> git-gateway <<<` block to `~/.bashrc`.
-5. From then on: developers `ssh` in with their key and commit normally —
+5. **Users & Keys → Secure SSH sessions** (optional but recommended) —
+   `sudo apt install bubblewrap` on the server, then press
+   *Install / re-apply to all keys* and **Enable secure sessions**. Each
+   developer's key then opens a session that contains only the applications
+   granted to that e-mail; the administrator's own key stays on *Full shell*.
+6. From then on: developers `ssh` in with their key and commit normally —
    commits are automatically signed with their name/e-mail and only succeed
    if they were granted that application.
 
@@ -167,6 +199,9 @@ git-gateway/
   users.json        GUI panel accounts (username, role, salted hash)
   permissions.json  per-repo allowlists, manual users, display names
   identify.sh       SSH-identity autodetection (installed into .bashrc)
+  ggw-session      secure-session launcher (forced command of sandboxed keys)
+  sessions/*.env   per-e-mail identity bound read-only into its session
+  work/<email>/    per-developer writable home inside the sandbox
 ```
 
 ## Updating the code (important)
