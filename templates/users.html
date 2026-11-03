@@ -158,14 +158,33 @@ cat ~/.ssh/id_ed25519.pub</pre>
   {% if me_role == 'admin' %}
   <p class="help">Roles: <b>admin</b> = full control (permissions, hooks, users, settings, all git commands).
   <b>viewer</b> = read-only (browse applications &amp; commits + safe commands:
-  {% for c in viewer_ok %}<code>{{ c }}</code>{% if not loop.last %}, {% endif %}{% endfor %}).</p>
+  {% for c in viewer_ok %}<code>{{ c }}</code>{% if not loop.last %}, {% endif %}{% endfor %}).<br>
+  <b>Identity</b> links a panel account to a developer e-mail: commits made through the
+  panel's <code>git commit</code> are stamped with THAT e-mail (and refused if it is not
+  authorized on the repository).</p>
   <div class="wrap">
   <table>
-    <tr><th>Account</th><th>Role</th><th class="right">Actions</th></tr>
+    <tr><th>Account</th><th>Role</th><th>Identity (panel commit e-mail)</th><th class="right">Actions</th></tr>
     {% for u in gui_users_list %}
     <tr>
       <td><b>{{ u.username }}</b>{% if u.username == me %} <span class="badge b-info">you</span>{% endif %}</td>
       <td>{% if u.role == 'admin' %}<span class="badge b-ok">admin</span>{% else %}<span class="badge b-muted">viewer</span>{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('gui_users_link') }}" class="inline row">
+          {{ csrf_field() }}
+          <input type="hidden" name="username" value="{{ u.username }}">
+          <select name="email" style="max-width:240px;padding:5px 8px" class="mono">
+            <option value="">— none (panel commits refused) —</option>
+            {% for e in email_list %}
+            <option value="{{ e }}" {% if u.email == e %}selected{% endif %}>{{ e }}</option>
+            {% endfor %}
+            {% if u.email and u.email not in email_list %}
+            <option value="{{ u.email }}" selected>{{ u.email }}</option>
+            {% endif %}
+          </select>
+          <button class="btn ghost sm">Save</button>
+        </form>
+      </td>
       <td class="right">
         <form method="post" action="{{ url_for('gui_users_reset') }}" class="inline row">
           {{ csrf_field() }}
@@ -190,6 +209,10 @@ cat ~/.ssh/id_ed25519.pub</pre>
     <select name="role">
       <option value="viewer">viewer (read-only)</option>
       <option value="admin">admin (full)</option>
+    </select>
+    <select name="email" class="mono" style="max-width:240px">
+      <option value="">identity: none (set later)</option>
+      {% for e in email_list %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
     </select>
     <button>Add account</button>
   </form>

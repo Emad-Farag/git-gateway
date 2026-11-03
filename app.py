@@ -5,8 +5,8 @@ on one server.
 - Discovers every git repository under the configured roots (e.g. ~/frappe-bench/apps)
 - Reads all e-mails registered in ~/.ssh/authorized_keys
 - Lets an admin grant per-user (e-mail) access per repository via a GUI matrix
-- Auto-installs a pre-commit hook to every repository that only allows
-  authorized e-mails and stamps the committer with their SSH-identity name
+- Auto-installs pre/post-commit hooks to every repository that verify the
+  committer's SSH key at commit time and only allow authorized e-mails
 - Shows every commit of every application in the GUI (who / when / what)
 - Runs git commands (pull / push / add / commit / branch / ...) from the GUI
 
@@ -158,11 +158,15 @@ def migrate_legacy_admin_password():
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
 
-def run(args, cwd=None, timeout=90):
+def run(args, cwd=None, timeout=90, extra_env=None):
     """Run a command, return dict(ok, code, out, err). Never raises."""
     try:
+        env = None
+        if extra_env:
+            env = os.environ.copy()
+            env.update(extra_env)
         p = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
-                           timeout=timeout, shell=False)
+                           timeout=timeout, shell=False, env=env)
         return {"ok": p.returncode == 0, "code": p.returncode,
                 "out": p.stdout or "", "err": p.stderr or ""}
     except subprocess.TimeoutExpired:
@@ -248,22 +252,44 @@ def repo_meta(path, quick=True):
 
 def hook_state(path, st=None):
     st = st or state_get()
-    hook  = os.path.join(path, ".git", "hooks", "pre-commit")
-    allow = os.path.join(path, ".git", "hooks", ".ggw-allowed")
-    expected = sorted(st["allowed"].get(path, []))
-    try:
-        content = open(hook, encoding="utf-8", errors="ignore").read()
-    except Exception:
+    hooks = os.path.join(path, ".git", "hooks")
+    files = {"pre-commit": HOOK_PRE_TEMPLATE, "post-commit": HOOK_POST_TEMPLATE,
+             ".ggw-verify": HOOK_COMMON}
+    states = []
+    for name, tpl in files.items():
+        p = os.path.join(hooks, name)
+        if not os.path.isfile(p):
+            states.append("missing")
+            continue
+        try:
+            content = open(p, encoding="utf-8", errors="ignore").read()
+        except Exception:
+            states.append("missing")
+            continue
+        stripped = content.strip()
+        if len(stripped) <= 2:
+            states.append("empty")          # broken stub (e.g. saved by an editor)
+        elif HOOK_MARKER not in content:
+            states.append("foreign")        # someone else's hook — leave alone
+        elif stripped != tpl.strip():
+            states.append("stale")          # ours but written by an older version
+        else:
+            states.append("installed")
+    if all(s == "installed" for s in states):
+        try:
+            have = sorted(l for l in open(os.path.join(hooks, ".ggw-allowed"),
+                                          encoding="utf-8").read().splitlines() if l)
+        except Exception:
+            have = None
+        expected = sorted(st["allowed"].get(path, []))
+        return "stale" if have != expected else "installed"
+    if "foreign" in states:
+        return "foreign"
+    if "empty" in states:
+        return "empty"
+    if "missing" in states:
         return "missing"
-    if len(content.strip()) <= 2:
-        return "empty"            # broken stub (e.g. saved by an editor) — repair it
-    if HOOK_MARKER not in content:
-        return "foreign"          # someone else's real hook — leave it alone
-    try:
-        have = sorted(l for l in open(allow, encoding="utf-8").read().splitlines() if l)
-    except Exception:
-        have = None
-    return "stale" if have != expected else "installed"
+    return "stale"
 
 
 # --------------------------------------------------------------------------
@@ -309,11 +335,15 @@ def all_emails():
 # --------------------------------------------------------------------------
 # Hooks & identity auto-install
 # --------------------------------------------------------------------------
-HOOK_TEMPLATE = """#!/bin/bash
-# Installed by Git Gateway (auto-generated) - DO NOT EDIT
-allow_file="$(git rev-parse --git-dir 2>/dev/null)/hooks/.ggw-allowed"
-email="${GIT_COMMITTER_EMAIL:-${GIT_AUTHOR_EMAIL:-$(git config --get user.email 2>/dev/null)}}"
-name="${GIT_COMMITTER_NAME:-${GIT_AUTHOR_NAME:-$(git config --get user.name 2>/dev/null)}}"
+# The verification logic lives in ONE shared generated file
+# (.git/hooks/.ggw-verify) sourced by BOTH hooks, so the code exists once.
+# pre-commit  : refuses a commit whose verified identity is not allowed.
+# post-commit : re-stamps (amends) a commit that git itself created with a
+#               DIFFERENT identity than the verified one (a pre-commit hook
+#               cannot modify the environment of its parent git process).
+HOOK_COMMON = r"""# Git Gateway identity verification - sourced by pre-commit/post-commit.
+# Installed by Git Gateway (auto-generated) - DO NOT EDIT.
+# Sets on success: GGW_EMAIL, GGW_NAME, GGW_VIA. Exits 1 (deny) on failure.
 
 deny () {
   echo "==================================================" >&2
@@ -325,34 +355,116 @@ deny () {
   exit 1
 }
 
+allow_file="$(git rev-parse --git-dir 2>/dev/null)/hooks/.ggw-allowed"
 [ -f "$allow_file" ] || deny "No allowlist is installed for this repository."
-[ -n "$email" ]      || deny "Cannot verify your identity. Connect with your authorized SSH key."
 
-if ! grep -ixF "$email" "$allow_file" >/dev/null 2>&1; then
-  deny "You are NOT authorized to commit to this repository (detected: $email)."
+email=""; name=""; via=""
+
+# --- 1) commit made by the Git Gateway panel service itself? ---------------
+# Walk the parent-process chain: only processes that really descend from the
+# git-gateway service qualify (an interactive shell cannot fake its ancestry).
+_gg_p=$$
+_gg_i=0
+while [ "$_gg_i" -lt 25 ]; do
+  _gg_i=$((_gg_i+1))
+  [ -r "/proc/$_gg_p/cmdline" ] || break
+  _gg_cl="$(tr '\0' ' ' < "/proc/$_gg_p/cmdline" 2>/dev/null)"
+  _gg_cg="$(cat "/proc/$_gg_p/cgroup" 2>/dev/null)"
+  case "$_gg_cl|$_gg_cg" in
+    *git-gateway*|*gitgateway*)
+      via="panel"
+      email="${GIT_GGW_PANEL_EMAIL:-}"
+      name="${GIT_GGW_PANEL_NAME:-}"
+      break ;;
+  esac
+  _gg_pp="$(awk '/^PPid:/{print $2}' "/proc/$_gg_p/status" 2>/dev/null)"
+  [ -n "$_gg_pp" ] || break
+  [ "$_gg_pp" = "1" ] && break
+  _gg_p="$_gg_pp"
+done
+
+# --- 2) otherwise the SSH agent key decides (client GIT_* values ignored) ---
+if [ -z "$via" ] && [ -f "$HOME/.ssh/authorized_keys" ]; then
+  _gg_keys="$HOME/.ssh/authorized_keys"
+  _gg_fps="$(ssh-add -l 2>/dev/null | grep -v 'no identities')"
+  _gg_all="$(ssh-keygen -lf "$_gg_keys" 2>/dev/null)"
+  if [ -n "$_gg_fps" ] && [ -n "$_gg_all" ]; then
+    for _gg_fp in $(printf '%s\n' "$_gg_fps" | grep -o 'SHA256:[A-Za-z0-9+/=]*'); do
+      _gg_l="$(printf '%s\n' "$_gg_all" | grep -F "$_gg_fp" | head -n 1)"
+      [ -n "$_gg_l" ] || continue
+      email="$(printf '%s\n' "$_gg_l" | grep -oE '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+[.][a-zA-Z]{2,}' | head -n 1)"
+      [ -n "$email" ] && { via="ssh-key"; break; }
+    done
+    if [ -z "$email" ]; then
+      # Some keys carry their identity in an environment="GIT_AUTHOR_EMAIL=..."
+      # option instead of the comment — match against the raw file lines for it.
+      while IFS= read -r _gg_raw; do
+        case "$_gg_raw" in ""|"#"*) continue ;; esac
+        _gg_l="$(printf '%s\n' "$_gg_raw" | ssh-keygen -lf - 2>/dev/null | head -n 1)"
+        [ -n "$_gg_l" ] || continue
+        _gg_fp2="$(printf '%s\n' "$_gg_l" | grep -o 'SHA256:[A-Za-z0-9+/=]*')"
+        [ -n "$_gg_fp2" ] || _gg_fp2="$(printf '%s\n' "$_gg_l" | grep -oE '([0-9a-f]{2}:){15}[0-9a-f]{2}')"
+        [ -n "$_gg_fp2" ] || continue
+        printf '%s\n' "$_gg_fps" | grep -qF "$_gg_fp2" || continue
+        email="$(printf '%s\n' "$_gg_raw" | grep -oE 'GIT_AUTHOR_EMAIL=[^"]+' | head -n 1 | sed 's/.*=//')"
+        [ -n "$email" ] && { via="ssh-key"; break; }
+      done < "$_gg_keys"
+    fi
+  fi
 fi
+
+[ -n "$email" ] || deny "Cannot verify your identity: no matching SSH key. Connect with your
+authorized SSH key (run 'ssh-add') and try again."
+
+grep -ixF "$email" "$allow_file" >/dev/null 2>&1 \
+  || deny "You are NOT authorized to commit to this repository (verified identity: $email)."
 
 if [ -z "$name" ]; then
   name="$(printf %s "$email" | cut -d@ -f1 | tr '._-' '  ' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); print}')"
-  export GIT_AUTHOR_NAME="$name" GIT_COMMITTER_NAME="$name"
 fi
 
-# Always stamp the commit with the verified identity
-export GIT_AUTHOR_EMAIL="$email"
-export GIT_COMMITTER_EMAIL="$email"
+GGW_EMAIL="$email"; GGW_NAME="$name"; GGW_VIA="$via"
+export GGW_EMAIL GGW_NAME GGW_VIA
+"""
 
+HOOK_PRE_TEMPLATE = r"""#!/bin/bash
+# Installed by Git Gateway (auto-generated) - DO NOT EDIT
+# pre-commit: verify the committer's SSH identity BEFORE accepting the commit.
+# GIT_* values forged by the client shell are IGNORED — the SSH agent decides.
+_dir="$(git rev-parse --git-dir 2>/dev/null)"
+[ -n "$_dir" ] || exit 1
+if [ ! -f "$_dir/hooks/.ggw-verify" ]; then
+  echo "Git Gateway: hook files are incomplete - run 'Refresh all hooks' in the panel." >&2
+  exit 1
+fi
+. "$_dir/hooks/.ggw-verify"
+exit 0
+"""
+
+HOOK_POST_TEMPLATE = r"""#!/bin/bash
+# Installed by Git Gateway (auto-generated) - DO NOT EDIT
+# post-commit: a hook cannot change the environment of its parent 'git commit'
+# process, so the VERIFIED identity is enforced here. If the commit that was
+# just made carries anything but the verified e-mail, it is amended NOW.
+[ "$GIT_GGW_AMEND" = "1" ] && exit 0
+_dir="$(git rev-parse --git-dir 2>/dev/null)"
+[ -n "$_dir" ] || exit 0
+[ -f "$_dir/hooks/.ggw-verify" ] || exit 0
+. "$_dir/hooks/.ggw-verify" || exit 0
+[ -n "$GGW_EMAIL" ] || exit 0
+_ae="$(git log -1 --format='%ae' 2>/dev/null)"
+_ce="$(git log -1 --format='%ce' 2>/dev/null)"
+[ "$_ae" = "$GGW_EMAIL" ] && [ "$_ce" = "$GGW_EMAIL" ] && exit 0
+GIT_GGW_AMEND=1 GIT_AUTHOR_NAME="$GGW_NAME" GIT_AUTHOR_EMAIL="$GGW_EMAIL" \
+GIT_COMMITTER_NAME="$GGW_NAME" GIT_COMMITTER_EMAIL="$GGW_EMAIL" \
+  git -c commit.gpgsign=false commit --amend --no-edit --reset-author -q >/dev/null 2>&1 \
+  && echo "Git Gateway: commit re-stamped as $GGW_NAME <$GGW_EMAIL>" >&2
 exit 0
 """
 
 
-def install_hook(repo_path, emails):
-    """Write the allowlist and pre-commit hook for one repository."""
-    hooks = os.path.join(repo_path, ".git", "hooks")
-    os.makedirs(hooks, exist_ok=True)
-    with open(os.path.join(hooks, ".ggw-allowed"), "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(set(emails))) + ("\n" if emails else ""))
-    os.chmod(os.path.join(hooks, ".ggw-allowed"), 0o644)
-    hook = os.path.join(hooks, "pre-commit")
+def _write_hook_file(hook, template, mode):
+    """Sync one generated hook file; return True if (re)written now."""
     need_write = not os.path.isfile(hook)
     if os.path.isfile(hook):
         try:
@@ -360,14 +472,29 @@ def install_hook(repo_path, emails):
         except Exception:
             content = ""
         if HOOK_MARKER in content:
-            need_write = content.strip() != HOOK_TEMPLATE.strip()  # ours: keep in sync
+            need_write = content.strip() != template.strip()  # ours: keep in sync
         elif len(content.strip()) <= 2:
             need_write = True    # broken/empty stub — replace it
         # else: foreign hook — leave it alone (shown as "Custom hook" in the GUI)
     if need_write:
         with open(hook, "w", encoding="utf-8", newline="\n") as f:
-            f.write(HOOK_TEMPLATE)
-        os.chmod(hook, 0o755)
+            f.write(template)
+        os.chmod(hook, mode)
+    return need_write
+
+
+def install_hook(repo_path, emails):
+    """Write the allowlist and the pre/post-commit hook pair for one repository."""
+    hooks = os.path.join(repo_path, ".git", "hooks")
+    os.makedirs(hooks, exist_ok=True)
+    allow = os.path.join(hooks, ".ggw-allowed")
+    with open(allow, "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(set(emails))) + ("\n" if emails else ""))
+    os.chmod(allow, 0o644)
+    # verify first, so the sourced file exists before the hooks reference it
+    _write_hook_file(os.path.join(hooks, ".ggw-verify"), HOOK_COMMON, 0o644)
+    _write_hook_file(os.path.join(hooks, "pre-commit"),  HOOK_PRE_TEMPLATE,  0o755)
+    _write_hook_file(os.path.join(hooks, "post-commit"), HOOK_POST_TEMPLATE, 0o755)
 
 
 def refresh_hooks():
@@ -668,8 +795,19 @@ def gui_users_add():
     if find_gui_user(username):
         flash("Username already exists.", "error")
         return redirect(url_for("users"))
+    email = (request.form.get("email") or "").strip().lower()
+    if email and not EMAIL_RE.fullmatch(email):
+        flash("Invalid identity e-mail.", "error")
+        return redirect(url_for("users"))
     create_gui_user(username, pw, role)
-    flash("Account %s created (%s)." % (username, role), "success")
+    if email:
+        users = gui_users()
+        for u in users:
+            if u["username"] == username:
+                u["email"] = email
+        save_gui_users(users)
+    flash("Account %s created (%s)."
+          % (username, role + (" — commits as %s" % email if email else "")), "success")
     return redirect(url_for("users"))
 
 
@@ -689,6 +827,30 @@ def gui_users_del():
         return redirect(url_for("users"))
     save_gui_users(users)
     flash("Account %s deleted." % username, "success")
+    return redirect(url_for("users"))
+
+
+@app.route("/gui-users/link", methods=["POST"])
+@admin_required
+def gui_users_link():
+    """Link (or clear) the SSH identity e-mail of a GUI account, so commits
+    made by that account through the panel are stamped with THIS identity."""
+    username = request.form.get("username", "").strip()
+    email    = (request.form.get("email") or "").strip().lower()
+    users = gui_users()
+    for u in users:
+        if u.get("username") == username:
+            if email and not EMAIL_RE.fullmatch(email):
+                flash("Invalid e-mail address.", "error")
+                return redirect(url_for("users"))
+            u["email"] = email or None
+            save_gui_users(users)
+            flash("%s now commits as %s via the panel%s."
+                  % (username, email or "(no identity — commits refused)",
+                     "" if email else " — link an e-mail to enable 'git commit'"),
+                  "success")
+            return redirect(url_for("users"))
+    flash("Account not found.", "error")
     return redirect(url_for("users"))
 
 
@@ -779,29 +941,40 @@ def hook_install():
 @app.route("/hook/remove", methods=["POST"])
 @admin_required
 def hook_remove():
-    """Delete .git/hooks/pre-commit — only if it is ours or broken/empty.
-    A real custom hook written by other tooling is never removed."""
+    """Delete our hook files (.ggw-verify / pre-commit / post-commit) — only
+    if they are ours or broken/empty. A real custom hook written by other
+    tooling is never removed."""
     repo = request.form.get("repo", "")
-    nxt = request.form.get("next") or url_for("dashboard")
+    nxt  = request.form.get("next") or url_for("dashboard")
     if repo not in find_repos():
         flash("Repository not found — cannot remove the hook.", "error")
         return redirect(url_for("dashboard"))
-    hook = os.path.join(repo, ".git", "hooks", "pre-commit")
-    if not os.path.isfile(hook):
-        flash("No pre-commit hook present on %s." % os.path.basename(repo), "info")
+    removed, refused = [], False
+    for name in ("pre-commit", "post-commit"):
+        hook = os.path.join(repo, ".git", "hooks", name)
+        if not os.path.isfile(hook):
+            continue
+        try:
+            content = open(hook, encoding="utf-8", errors="ignore").read()
+        except Exception:
+            content = ""
+        if HOOK_MARKER not in content and content.strip():
+            refused = True                 # a real custom hook — never delete
+        else:
+            os.remove(hook)
+            removed.append(name)
+    verify = os.path.join(repo, ".git", "hooks", ".ggw-verify")
+    if os.path.isfile(verify):
+        os.remove(verify)                  # shared verifier is always ours
+    if refused and not removed:
+        flash("These are custom hooks (not written by Git Gateway) — removing "
+              "them is refused. Remove them manually if you are sure.", "error")
         return redirect(nxt)
-    try:
-        content = open(hook, encoding="utf-8", errors="ignore").read()
-    except Exception:
-        content = ""
-    if HOOK_MARKER not in content and content.strip():
-        flash("That pre-commit is a custom hook (not written by Git Gateway) "
-              "— removing it is refused. Remove it manually if you are sure.",
-              "error")
+    if not removed:
+        flash("No Git Gateway hook present on %s." % os.path.basename(repo), "info")
         return redirect(nxt)
-    os.remove(hook)
-    flash("pre-commit hook removed from %s. Commits are no longer blocked "
-          "by Git Gateway here (the allowlist file was left in place)."
+    flash("Git Gateway hooks removed from %s. Commits are no longer blocked "
+          "here (the allowlist file was left in place)."
           % os.path.basename(repo), "success")
     return redirect(nxt)
 
@@ -1098,7 +1271,18 @@ def repo_run():
         flash("This action needs the confirm checkbox.", "error")
         return redirect(nxt)
     args = guard_args(cmd, request.form.get("args", ""))
-    res  = run(["git", cmd] + args, cwd=path, timeout=180)
+    extra_env = None
+    if cmd == "commit":
+        u = find_gui_user(session.get("user", ""))
+        ident = (u or {}).get("email", "")
+        if ident:
+            extra_env = {"GIT_GGW_PANEL_EMAIL": ident,
+                         "GIT_GGW_PANEL_NAME": ident.split("@")[0].replace(".", " ").replace("_", " ").title()}
+        else:
+            flash("This panel account has no developer e-mail linked "
+                  "(Users & Keys → GUI accounts → Identity), so 'git commit' "
+                  "will be refused by the hook.", "info")
+    res = run(["git", cmd] + args, cwd=path, timeout=180, extra_env=extra_env)
     label = ("git %s %s" % (cmd, " ".join(args))).strip()
     if res["ok"]:
         flash("✓ %s" % label, "success")
@@ -1196,6 +1380,7 @@ def settings_save():
 def base_ctx():
     st = state_get()
     return {"emails_total": len(all_emails()),
+            "email_list": sorted(all_emails()),
             "key_status": "found" if os.path.isfile(SSH_KEYS) else "missing",
             "bashrc_state": bashrc_status(),
             "ssh_path": SSH_KEYS,

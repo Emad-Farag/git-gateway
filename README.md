@@ -25,19 +25,34 @@ the same applications**, with every commit linked to a verified SSH identity.
   application, save, hooks update instantly.
 - A user with no permissions anywhere has **every commit rejected**.
 
-### Automatic enforcement (pre-commit hooks)
-- A generated `pre-commit` hook is installed on every configured repository:
-  - rejects the commit when the detected e-mail is not on the repository
-    allowlist,
-  - rejects commits with no verified identity (no SSH key matched),
-  - always re-stamps author/committer with the verified e-mail — a commit
-    cannot be forged with someone else's name.
+### Automatic enforcement (git hooks)
+- Each configured repository gets a generated hook pair
+  (`pre-commit` + `post-commit`) that both source a shared verifier
+  (`.git/hooks/.ggw-verify`).
+- **Identity is verified at commit time by the hook itself**: it matches the
+  SSH-agent fingerprints of the current session against
+  `~/.ssh/authorized_keys` and derives the e-mail from the matched key.
+  `GIT_COMMITTER_EMAIL` / `GIT_AUTHOR_EMAIL` values exported by the client
+  shell are **ignored** — a developer cannot commit while claiming another
+  user's e-mail. Keys with `environment="GIT_AUTHOR_EMAIL=..."` are
+  supported too.
+- `pre-commit` **refuses** the commit when the verified e-mail is not on the
+  repository allowlist, or when no SSH key matches.
+- A hook cannot change the environment of its parent `git commit` process, so
+  the verified identity is applied by `post-commit`: any commit that git
+  created with a DIFFERENT identity is instantly **amended and re-stamped**
+  with the verified name/e-mail (hop-free: one amend, no hook loop).
+- **Panel commits are identified by process ancestry**: the hook only trusts
+  the panel identity when the commit process really descends from the
+  `git-gateway.service` process. The identity is the e-mail **linked to the
+  signed-in GUI account** (*Users & Keys → GUI accounts → Identity*);
+  unlinked accounts cannot commit via the panel.
 - An SSH-identity helper (`identify.sh`) is installed into `~/.bashrc`
-  (managed `# >>> git-gateway <<<` block). At login it matches the actual
-  SSH-agent key fingerprint against `authorized_keys` and exports the correct
-  `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables.
-- Hooks are re-synced automatically whenever permissions change; broken or
-  empty hook files are detected and repaired by the *Write hook* button.
+  (managed `# >>> git-gateway <<<` block) to stamp shells with the correct
+  name/e-mail at login.
+- Hooks are re-synced automatically whenever permissions change; hooks
+  written by an older version are flagged "Out of date"; broken or empty
+  hook files are repaired by the *Write hook* button.
 - Foreign (non-Gateway) hooks in any repository are left untouched and shown
   with a "Custom hook" badge.
 
@@ -64,6 +79,9 @@ the same applications**, with every commit linked to a verified SSH identity.
   - **viewer** — read-only: browse applications and commit history, safe
     commands only (`status`, `log`, `blame`, `diff`, `show`, `branch`,
     `describe`, `tag`). Write commands, permissions and settings are refused.
+- Every GUI account can be linked to a **developer e-mail** (Identity):
+  panel `git commit` runs are stamped with that e-mail and refused when it
+  is not authorized on the target repository.
 - First visit creates the first admin account (setup screen).
 - Account management: add, delete, reset password, role select — you cannot
   delete yourself or the last admin.
@@ -171,6 +189,7 @@ sudo systemctl disable --now git-gateway.service
 sudo rm /etc/systemd/system/git-gateway.service
 rm -rf ~/.gitgateway
 # hooks in each repository remain and keep enforcing; delete them with:
-#   rm <repo>/.git/hooks/pre-commit <repo>/.git/hooks/.ggw-allowed
+#   rm <repo>/.git/hooks/pre-commit <repo>/.git/hooks/post-commit \
+#      <repo>/.git/hooks/.ggw-verify <repo>/.git/hooks/.ggw-allowed
 # and remove the "# >>> git-gateway <<<" block from ~/.bashrc
 ```
