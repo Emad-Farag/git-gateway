@@ -10,6 +10,23 @@
   <div class="stat"><div class="n">{% if bashrc_state == 'installed' %}&#10003;{% else %}&#8212;{% endif %}</div><div class="t">SSH identity script</div></div>
 </div>
 
+{% if unenforced %}
+<div class="card" style="border-color:rgba(224,82,82,.45);margin-bottom:14px">
+  <h2 style="color:var(--err)">&#9888; Enforcement is not active on {{ unenforced|length }} repositor{{ 'y' if unenforced|length == 1 else 'ies' }}</h2>
+  <p class="help">These repositories have authorized users configured, but their hook is
+  <b>missing, outdated or overwritten by another tool</b> &mdash; commits there would not be
+  verified against the allowlist. Press <b>Refresh all hooks</b> above, or open the repository
+  and press <i>Write hook</i>.</p>
+  <ul class="help">
+    {% for r in unenforced %}
+    <li><b>{{ r.name }}</b> &mdash; <code>{{ r.path }}</code>
+      (<span class="badge {{ 'b-err' if r.hook in ('missing','foreign','empty') else 'b-warn' }}">{{ r.hook }}</span>,
+      {{ r.users|length }} authorized)</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <div class="row" style="margin-bottom:14px">
   <form method="post" action="{{ url_for('scan') }}" class="inline">{{ csrf_field() }}<button class="btn ghost sm">&#8635;&nbsp; Rescan applications</button></form>
   <form method="post" action="{{ url_for('hooks_refresh') }}" class="inline">{{ csrf_field() }}<button class="btn ghost sm">&#10097;&nbsp; Refresh all hooks</button></form>

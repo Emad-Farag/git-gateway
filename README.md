@@ -24,6 +24,10 @@ the same applications**, with every commit linked to a verified SSH identity.
 - Per-repository access matrix: tick which e-mail may commit to which
   application, save, hooks update instantly.
 - A user with no permissions anywhere has **every commit rejected**.
+- **Sync users from authorized_keys** button: re-reads the file, picks up keys
+  added outside the panel (by hand or by another tool), applies their session
+  mode and refreshes every repository hook. Reports which e-mails are new and
+  which disappeared.
 
 ### Secure SSH sessions (one Linux account, isolation per SSH key)
 - Without changing how developers connect (`ssh user@server`, VS Code
@@ -47,6 +51,9 @@ the same applications**, with every commit linked to a verified SSH identity.
 - The commit hooks also trust the session identity (bound read-only at
   `/run/ggw/session.env`), so commits stay correctly stamped — the identity
   cannot be forged by exporting variables.
+- Turning the feature **off restores normal login shells** on every key (the
+  launcher is removed from `authorized_keys`), so nobody is locked out while
+  the panel is off; hooks keep enforcing commit permissions either way.
 
 ### Automatic enforcement (git hooks)
 - Each configured repository gets a generated hook pair
@@ -59,6 +66,14 @@ the same applications**, with every commit linked to a verified SSH identity.
   shell are **ignored** — a developer cannot commit while claiming another
   user's e-mail. Keys with `environment="GIT_AUTHOR_EMAIL=..."` are
   supported too.
+- **A stale hook can never silently answer for a valid one**: on the first
+  request after every restart the app re-installs the current hook pair on
+  every configured repository (self-heal), and the dashboard shows a red
+  **“Enforcement is not active”** panel listing any repository whose hook is
+  missing, outdated or foreign. Older hook versions trusted `git config
+  user.email` — that is what allowed a key with no permission on an app to
+  commit while another developer's key accepted normally; the current hooks
+  never read that value.
 - `pre-commit` **refuses** the commit when the verified e-mail is not on the
   repository allowlist, or when no SSH key matches.
 - A hook cannot change the environment of its parent `git commit` process, so
@@ -122,6 +137,14 @@ the same applications**, with every commit linked to a verified SSH identity.
   `sudo apt install bubblewrap`, then *Users & Keys → Install / re-apply to
   all keys*. Keep SSH **key-only** on the server (`PasswordAuthentication no`):
   a password login would bypass the per-key launcher.
+- **SSH login policy switch (Settings)**: one button disables password logins
+  (`PasswordAuthentication no`, keys in `authorized_keys` only) and another
+  restores them. It runs through the root helper
+  `/usr/local/sbin/git-gateway-ssh`, restricted by an exact-argument sudoers
+  rule to `status`, `disable-password` and `enable-password` — the panel never
+  gets a free-form sudo shell. Every change is validated with `sshd -t` and
+  rolled back automatically if sshd rejects it; disabling is refused when no
+  key is registered (lock-out protection).
 
 ### Web service
 - Runs as **`git-gateway.service`** (systemd): always running, starts on
@@ -159,7 +182,8 @@ The installer:
    `.git` under the scan roots is listed.
 2. **Users & Keys** — every e-mail found in `~/.ssh/authorized_keys` appears
    automatically. New keys can be added from the same page (with per-OS
-   instructions for the developers), or a manual user can be added.
+   instructions for the developers), or a manual user can be added. Keys added
+   by hand later are picked up by **Sync users from authorized_keys**.
 3. **Permissions** — tick which e-mail may commit to which application.
    Saving rewrites each repository's hook + allowlist file
    (`.git/hooks/.ggw-allowed`).
@@ -170,7 +194,11 @@ The installer:
    *Install / re-apply to all keys* and **Enable secure sessions**. Each
    developer's key then opens a session that contains only the applications
    granted to that e-mail; the administrator's own key stays on *Full shell*.
-6. From then on: developers `ssh` in with their key and commit normally —
+6. **Settings → SSH login policy** (recommended) — press
+   **Disable password logins (keys only)** so nobody can bypass the per-key
+   session launcher with the account password. The switch is reversible and
+   refuses to run when no key is registered.
+7. From then on: developers `ssh` in with their key and commit normally —
    commits are automatically signed with their name/e-mail and only succeed
    if they were granted that application.
 
@@ -192,6 +220,7 @@ git-gateway/
   static/style.css
   install.sh        Linux installer (systemd)
   update.sh         applies code changes to the running install
+  ssh-security.sh   root helper installed to /usr/local/sbin/git-gateway-ssh
   uninstall.sh      full removal
 ~/.gitgateway/      runtime data
   app/              the running copy of app.py + templates + static
@@ -212,19 +241,29 @@ the service restarted. So after every change:
 
 ```bash
 cd /opt/git-gateway
-bash update.sh            # copies app.py+templates+static, restarts the service
+bash update.sh            # copies app.py+templates+static, installs the SSH helper, restarts
 ```
 
 Then hard-refresh the browser (Ctrl+Shift+R) to bypass CSS cache.
 
+`update.sh` also installs the root helper and its sudoers rule (it asks for
+your sudo password once when run from a terminal); in a non-interactive shell
+it prints the two exact commands to run instead. The Settings page then
+switches from "helper not installed" to showing the effective SSH policy.
+
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now git-gateway.service
-sudo rm /etc/systemd/system/git-gateway.service
-rm -rf ~/.gitgateway
-# hooks in each repository remain and keep enforcing; delete them with:
-#   rm <repo>/.git/hooks/pre-commit <repo>/.git/hooks/post-commit \
-#      <repo>/.git/hooks/.ggw-verify <repo>/.git/hooks/.ggw-allowed
-# and remove the "# >>> git-gateway <<<" block from ~/.bashrc
+bash uninstall.sh                    # keeps repository hooks enforcing
+bash uninstall.sh --remove-hooks     # also deletes every hook + allowlist
 ```
+
+`uninstall.sh` stops/removes the service, removes the restart/session sudoers
+rules and the root helper, and removes the Git Gateway `command=` launcher from
+`authorized_keys` **before** deleting `~/.gitgateway` (otherwise every key would
+point at a missing launcher and SSH would stop working). The existing bootstrap
+block is stripped from `~/.bashrc` too.
+
+The SSH hardening file `/etc/ssh/sshd_config.d/99-git-gateway-hardening.conf`
+is intentionally left in place — password logins stay disabled until you
+delete it and reload ssh.

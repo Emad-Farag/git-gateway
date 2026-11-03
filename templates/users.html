@@ -131,12 +131,23 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     <pre>echo "ssh-ed25519 AAAA... dev.name@company.com" >> ~/.ssh/authorized_keys</pre>
     <p class="help">The e-mail must be part of the key comment (or an
     <code>environment="GIT_AUTHOR_EMAIL=..."</code> option). Then press
-    <b>Rescan applications</b> &mdash; the user appears here automatically.</p>
+    <b>Sync users from authorized_keys</b> above &mdash; the user appears here
+    automatically and every hook is refreshed.</p>
   </div>
 
   <div class="card">
     <h2>Keys in {{ ssh_path }} <span class="badge b-muted">{{ keys|length }}</span></h2>
     {% if me_role == 'admin' %}
+    <div class="row" style="margin-bottom:10px">
+      <form method="post" action="{{ url_for('keys_sync') }}" class="inline">
+        {{ csrf_field() }}
+        <button class="btn ghost sm" title="Re-read authorized_keys and pick up keys added outside the panel">
+          &#8635;&nbsp; Sync users from authorized_keys</button>
+      </form>
+      <span class="help">Re-reads the file, picks up keys you added manually{% if sandbox.enabled %},
+      applies their session mode{% endif %} and refreshes every repository hook.
+      {% if last_sync %}Last sync: <b>{{ last_sync }}</b>.{% else %}Never synced from this panel yet.{% endif %}</span>
+    </div>
     <p class="help">Add or remove public keys directly here — no shell needed.
     A backup (<code>authorized_keys.ggw-bak</code>) is written before every change.
     Never paste a <b>private</b> key (private keys stay on the developer's machine).</p>

@@ -2,7 +2,7 @@
 {% block title %}Settings - Git Gateway{% endblock %}
 {% block content %}
 <h1>Settings</h1>
-<p class="lead">Scan locations, the automatic login-identity script and the admin password.</p>
+<p class="lead">Scan locations, the automatic login-identity script, SSH login policy and the admin password.</p>
 
 <div class="grid2">
   <div class="card">
@@ -41,7 +41,68 @@
   </div>
 </div>
 
-<div class="grid2">
+<div class="card" style="margin-bottom:16px">
+  <h2>SSH login policy
+    {% if not password_auth.helper %}<span class="badge b-warn">helper not installed</span>
+    {% elif password_auth.ready and password_auth.password == 'no' %}<span class="badge b-ok">&#128274; keys only</span>
+    {% elif password_auth.ready and password_auth.password == 'yes' %}<span class="badge b-err">password logins enabled</span>
+    {% else %}<span class="badge b-muted">unknown</span>{% endif %}
+  </h2>
+  <p class="help">Password logins bypass the per-key SSH session launcher, so a shared
+  account password would let anyone skip the isolation and the identity rules.
+  Disabling them means <b>only keys present in <code>~/.ssh/authorized_keys</code> can
+  log in</b>. Changes are validated with <code>sshd -t</code> and rolled back
+  automatically if sshd rejects them — SSH is never left broken.</p>
+
+  <table>
+    <tr><td>Effective policy</td><td>
+      {% if password_auth.ready and password_auth.password == 'no' %}
+        <span class="badge b-ok">PasswordAuthentication no</span>
+      {% elif password_auth.ready and password_auth.password == 'yes' %}
+        <span class="badge b-err">PasswordAuthentication yes</span>
+      {% else %}
+        <span class="badge b-muted">not readable{% if password_auth.error %} — {{ password_auth.error }}{% endif %}</span>
+      {% endif %}</td></tr>
+    {% if password_auth.ready %}
+    <tr><td>Managed file</td><td>
+      {% if password_auth.managed %}<code>/etc/ssh/sshd_config.d/99-git-gateway-hardening.conf</code>
+      {% else %}<span class="help">none — the value comes from your own sshd config</span>{% endif %}</td></tr>
+    {% endif %}
+    <tr><td>Authorized keys</td><td>
+      {% if ssh_keys_total %}<span class="badge b-ok">{{ ssh_keys_total }} user(s) with a key in authorized_keys</span>
+      {% else %}<span class="badge b-err">none — disabling passwords is refused (lock-out protection)</span>{% endif %}</td></tr>
+  </table>
+
+  {% if not password_auth.helper %}
+  <p class="help" style="margin-top:10px">The root helper is missing. On the server, run
+  <code>cd /opt/git-gateway &amp;&amp; bash update.sh</code> once — it installs
+  <code>/usr/local/sbin/git-gateway-ssh</code> and its exact-argument sudoers rule
+  (status / disable-password / enable-password only). Then reload this page.</p>
+  {% else %}
+  <div class="row" style="margin-top:12px">
+    {% if password_auth.ready and password_auth.password == 'no' %}
+    <form method="post" action="{{ url_for('ssh_password_auth') }}"
+      onsubmit="return confirm('Allow SSH password logins again?\n\nAnyone with the account password could then bypass the per-key session launcher and the isolation.')">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="enable">
+      <button class="btn ghost">Allow password logins</button>
+    </form>
+    {% else %}
+    <form method="post" action="{{ url_for('ssh_password_auth') }}"
+      onsubmit="return confirm('Disable SSH password logins? Only keys in authorized_keys will be able to connect.\n\nMake sure you have a working key for BOTH the admin and every developer before confirming.')">
+      {{ csrf_field() }}
+      <input type="hidden" name="action" value="disable">
+      <button class="btn" {% if not ssh_keys_total %}disabled title="No SSH key registered — refusing to lock everyone out"{% endif %}>
+        &#128274; Disable password logins (keys only)</button>
+    </form>
+    {% endif %}
+    <span class="help">You can always revert with the other button; if the panel is
+    unreachable, edit <code>/etc/ssh/sshd_config.d/99-git-gateway-hardening.conf</code>
+    and run <code>sudo systemctl reload ssh</code>.</span>
+  </div>
+  {% endif %}
+</div>
+
 <div class="grid2">
   <div class="card">
     <h2>Change admin password</h2>
@@ -72,7 +133,6 @@
       <code>sudo systemctl restart git-gateway</code></span>
     </div>
   </div>
-</div>
   <div class="card">
     <h2>Files on the server</h2>
     <table>

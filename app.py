@@ -42,11 +42,14 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 STATE_PATH  = os.path.join(DATA_DIR, "permissions.json")
 SSH_KEYS    = os.path.join(HOME, ".ssh", "authorized_keys")
 BASHRC      = os.path.join(HOME, ".bashrc")
+SSH_TOOL    = "/usr/local/sbin/git-gateway-ssh"
 HOOK_MARKER = "Git Gateway"
 IDENTIFY_SH = os.path.join(DATA_DIR, "identify.sh")
 SESSION_SH  = os.path.join(DATA_DIR, "ggw-session")
 WORK_ROOT   = os.path.join(DATA_DIR, "work")
 LOCK        = threading.RLock()
+_HOOK_HEAL_LOCK = threading.Lock()
+_HOOK_HEALED    = False
 
 DEFAULT_CONFIG = {
     "port": 8555,
@@ -57,6 +60,8 @@ DEFAULT_CONFIG = {
     "sandbox_enabled": False,   # secure SSH sessions (bubblewrap) on/off
     "sandbox_allow_fallback": False,  # allow a normal shell if bwrap is missing
     "ssh_modes": {},            # email -> "sandbox" | "full"
+    "synced_emails": None,      # snapshot used by the "Sync users" button
+    "synced_at": None,          # epoch of the last successful sync
 }
 
 DEFAULT_STATE = {
@@ -527,6 +532,27 @@ def refresh_hooks():
     return done
 
 
+def heal_hooks_once():
+    """Self-heal on the first request after a restart.
+
+    Reason: a repository whose hook was written by an OLD version (or was
+    deleted by hand) could silently accept commits from identities the
+    allowlist never saw. Re-installing the hook pair at startup means the
+    current, identity-verifying hooks are always the ones running. Runs once
+    per process; permissions changes still sync immediately afterwards."""
+    global _HOOK_HEALED
+    if _HOOK_HEALED:
+        return
+    with _HOOK_HEAL_LOCK:
+        if _HOOK_HEALED:
+            return
+        _HOOK_HEALED = True
+    try:
+        refresh_hooks()
+    except Exception:
+        pass                    # never block a request because of a hook write
+
+
 IDENTIFY_SH_BODY = r"""#!/bin/bash
 # >>> Git Gateway identity detection (auto-generated) - DO NOT EDIT <<<
 # Detects which authorized SSH key started this session and exports
@@ -765,6 +791,82 @@ def ssh_mode_of(email):
     return modes.get(email, "sandbox")
 
 
+def _parse_kv(text):
+    out = {}
+    for line in (text or "").splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def ssh_password_auth_status():
+    """Read the REAL sshd policy through the root helper (exact sudoers rule).
+
+    Returns a dict the Settings page can render:
+      helper   -> helper script installed?
+      ready    -> status was read successfully
+      password -> "yes" / "no" / "" (unknown)
+      managed  -> our drop-in file exists
+      error    -> human-readable reason when not ready
+    """
+    helper = os.path.isfile(SSH_TOOL) and os.access(SSH_TOOL, os.X_OK)
+    info = {"helper": helper, "ready": False, "password": "",
+            "kbd": "", "managed": False, "error": "", "raw": ""}
+    if not helper:
+        info["error"] = ("The root helper %s is not installed — run "
+                         "'bash update.sh' on the server (it needs sudo once)." % SSH_TOOL)
+        return info
+    r = run(["sudo", "-n", SSH_TOOL, "status"], timeout=30)
+    kv = _parse_kv(r["out"])
+    info["raw"] = (r["out"] or "").strip()
+    if kv.get("ok") == "yes":
+        info["ready"] = True
+        info["password"] = kv.get("passwordauthentication", "")
+        info["kbd"] = kv.get("kbdinteractiveauthentication", "")
+        info["managed"] = kv.get("managed") == "yes"
+    else:
+        info["error"] = (kv.get("error") or (r["err"] or "").strip() or
+                         "Cannot read the SSH policy (sudo rule missing?)")
+        if "passwordauthentication" in kv:
+            info["password"] = kv["passwordauthentication"]
+            info["managed"] = kv.get("managed") == "yes"
+            info["ready"] = True
+    return info
+
+
+def set_ssh_password_auth(disable):
+    """Flip password logins. Return (ok, message). Refuses to lock everybody out."""
+    if not os.path.isfile(SSH_TOOL):
+        return False, ("The root helper is not installed. On the server run: "
+                       "sudo install -m 0755 -o root -g root ssh-security.sh "
+                       "/usr/local/sbin/git-gateway-ssh")
+    if disable:
+        # Guard against locking everybody out: at least one real key line must
+        # exist in authorized_keys (an e-mail-less key still counts).
+        try:
+            key_lines = len(parse_authorized_keys())
+        except Exception:
+            key_lines = 0
+        if key_lines == 0:
+            return False, ("Refusing to disable password logins: no SSH key is "
+                           "registered in %s. You would lock everybody out. Add a key "
+                           "(Users & Keys) first." % SSH_KEYS)
+    action = "disable-password" if disable else "enable-password"
+    r = run(["sudo", "-n", SSH_TOOL, action], timeout=60)
+    kv = _parse_kv(r["out"])
+    if kv.get("ok") == "yes":
+        warning = kv.get("warning", "")
+        if disable:
+            msg = ("Password logins are DISABLED — this server now accepts SSH "
+                   "keys only (authorized_keys). Keep at least one working key!")
+        else:
+            msg = "Password logins are ENABLED again for this server."
+        return True, (msg + (" " + warning if warning else ""))
+    return False, (kv.get("error") or (r["err"] or "").strip() or
+                   "The helper failed. Check: sudo %s %s" % (SSH_TOOL, action))
+
+
 # SSH option prefix (comma/space separated key=value pairs) + key + comment
 KEY_TYPE_RE = (r"(?:ssh-(?:rsa|dss|ed25519(?:-sk)?)|ecdsa-sha2-nistp\d{3}(?:-sk)?"
                r"|sk-(?:ssh-ed25519|ecdsa-sha2-nistp\d{3})@openssh\.com)")
@@ -792,11 +894,15 @@ def _sandbox_option(email):
     return 'command="%s %s"' % (SESSION_SH, email)
 
 
-def sync_authorized_key_modes():
+def sync_authorized_key_modes(force_plain=False):
     """Rewrite authorized_keys so every key gets the session mode of its
     e-mail: sandboxed keys run through ggw-session, 'full' keys get a normal
     login shell. Preserves other options and the key itself. A key that already
-    carries a command= from ANOTHER tool is left untouched (like a custom hook)."""
+    carries a command= from ANOTHER tool is left untouched (like a custom hook).
+
+    force_plain=True removes OUR launcher from every key (used when secure
+    sessions are switched off, so developers get normal shells again instead
+    of being locked out)."""
     if not os.path.isfile(SSH_KEYS):
         return 0
     lines = open(SSH_KEYS, encoding="utf-8", errors="ignore").read().splitlines()
@@ -818,7 +924,7 @@ def sync_authorized_key_modes():
         emails = [e.lower() for e in EMAIL_RE.findall(s)]
         email = emails[0] if emails else ""
         base = _strip_our_command(opts)
-        if email and ssh_mode_of(email) == "sandbox":
+        if (not force_plain) and email and ssh_mode_of(email) == "sandbox":
             new_opts = (base + "," if base else "") + _sandbox_option(email)
         else:
             new_opts = base
@@ -955,6 +1061,9 @@ def gate():
         if request.query_string:
             target += "?" + request.query_string.decode("utf-8", "replace")
         return redirect(url_for("login", next=target))
+
+    # once per process: make sure every configured repo runs the current hooks
+    heal_hooks_once()
 
 
 # ---------------------- auth ----------------------
@@ -1156,7 +1265,12 @@ def dashboard():
                              "msg": p[4], "when": rel_time(p[0]), "ts": int(p[0])})
     feed.sort(key=lambda x: -x["ts"])
 
+    # Repositories that have permissions but whose hook is missing/old/foreign:
+    # commits there would not be verified. Surface them loudly.
+    unenforced = [r for r in repos if r["users"] and r["hook"] != "installed"]
+
     return render_template("dashboard.html", repos=repos, feed=feed[:40],
+                           unenforced=unenforced,
                            output=pop_last_output(),
                            total=len(repos), people=len(all_emails()),
                            **base_ctx())
@@ -1272,6 +1386,8 @@ def users():
         })
     return render_template("users.html", rows=rows, keys=keys,
                            insecure_keys=sum(1 for k in keys if not k["secure"]),
+                           last_sync=(rel_time(cfg_get("synced_at"))
+                                      if cfg_get("synced_at") else None),
                            sandbox=sandbox_status(), **base_ctx())
 
 
@@ -1334,6 +1450,41 @@ def _backup_authorized_keys():
         return True
     except Exception:
         return False
+
+
+@app.route("/keys/sync", methods=["POST"])
+@admin_required
+def keys_sync():
+    """Re-read authorized_keys: pick up keys added by hand/outside the panel,
+    sandbox them when secure sessions are on, and refresh every hook."""
+    prev = cfg_get("synced_emails")
+    rewritten = 0
+    if cfg_get("sandbox_enabled"):
+        install_session_script()
+        rewritten = sync_authorized_key_modes()
+    else:
+        # keep keys usable: remove any leftover launcher while the feature is off
+        rewritten = sync_authorized_key_modes(force_plain=True)
+    hooks = refresh_hooks()
+    current = sorted(set(ssh_emails()))
+    added = [] if prev is None else sorted(set(current) - set(prev))
+    removed = sorted(set(prev or []) - set(current))
+    cfg_set(synced_emails=current, synced_at=int(time.time()))
+
+    bits = []
+    if added:
+        bits.append("%d new e-mail(s) picked up: %s" %
+                    (len(added), ", ".join(added)))
+    if removed:
+        bits.append("%d e-mail(s) no longer in the file: %s" %
+                    (len(removed), ", ".join(removed)))
+    if cfg_get("sandbox_enabled"):
+        bits.append("%d key line(s) sandboxed" % rewritten)
+    bits.append("%d user(s) total, hooks refreshed on %d repositories" %
+                (len(current), hooks))
+    flash("Sync complete — " + "; ".join(bits) + ".",
+          "success" if (added or removed or rewritten) else "info")
+    return redirect(url_for("users"))
 
 
 @app.route("/keys/add", methods=["POST"])
@@ -1484,12 +1635,29 @@ def ssh_toggle():
     if enabled:
         install_session_script()
         changed = sync_authorized_key_modes()
+    else:
+        # Restore normal login shells: keeping the forced command would lock
+        # every developer out while the feature is off.
+        changed = sync_authorized_key_modes(force_plain=True)
     flash(("Secure SSH sessions ENABLED — %d key line(s) rewritten. "
            "Test with a developer key before announcing it." % changed)
           if enabled else
-          "Secure SSH sessions DISABLED — sandboxed keys cannot connect "
-          "(re-enable here).", "success" if enabled else "info")
+          "Secure SSH sessions DISABLED — %d key line(s) restored to normal "
+          "shells (no launcher). Isolation is off, commits are still enforced "
+          "by the hooks." % changed, "success" if enabled else "info")
     return redirect(url_for("users"))
+
+
+@app.route("/ssh/password-auth", methods=["POST"])
+@admin_required
+def ssh_password_auth():
+    """Enable/disable SSH password logins through the root helper."""
+    action = request.form.get("action")
+    if action not in ("disable", "enable"):
+        abort(400, "Bad action")
+    ok, msg = set_ssh_password_auth(action == "disable")
+    flash(msg, "success" if ok else "error")
+    return redirect(url_for("settings"))
 
 
 # ---------------------- permissions matrix ----------------------
@@ -1685,6 +1853,8 @@ def settings():
                            run_port=run_port,
                            service_active=service_is_active(),
                            port_dirty=(str(cfg_get("port")) != str(run_port)),
+                           ssh_keys_total=len(ssh_emails()),
+                           password_auth=ssh_password_auth_status(),
                            identify=IDENTIFY_SH_BODY if os.path.isfile(IDENTIFY_SH) else None,
                            **base_ctx())
 

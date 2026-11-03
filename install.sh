@@ -81,6 +81,17 @@ mkdir -p "$DEST"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cp -r "$SCRIPT_DIR"/app.py "$SCRIPT_DIR"/templates "$SCRIPT_DIR"/static "$DEST"/
 
+# --- SSH login-policy helper (root-owned, exact-argument sudoers rule) ------
+# Used by Settings -> SSH login policy (disable/enable password logins).
+if [ -f "$SCRIPT_DIR/ssh-security.sh" ]; then
+  echo "==> Installing the SSH login-policy helper (root)"
+  sudo install -m 0755 -o root -g root "$SCRIPT_DIR/ssh-security.sh" /usr/local/sbin/git-gateway-ssh
+  RULE="$SERVICE_USER ALL=(root) NOPASSWD: /usr/local/sbin/git-gateway-ssh status, /usr/local/sbin/git-gateway-ssh disable-password, /usr/local/sbin/git-gateway-ssh enable-password"
+  sudo bash -c "echo '$RULE' > /etc/sudoers.d/git-gateway-ssh"
+  sudo chmod 440 /etc/sudoers.d/git-gateway-ssh
+  sudo visudo -c >/dev/null 2>&1 || echo "WARNING: sudoers check failed — inspect /etc/sudoers.d/git-gateway-ssh"
+fi
+
 # --- systemd service (starts on boot, stays running) ------------------------
 if command -v systemctl >/dev/null 2>&1 && [ -d "/etc/systemd/system" ]; then
   echo "==> Creating systemd service $SERVICE_UNIT"
