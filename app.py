@@ -641,6 +641,7 @@ SESSION_SCRIPT_BODY = r'''#!/usr/bin/env python3
 import json
 import os
 import shutil
+import subprocess
 import sys
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -679,6 +680,19 @@ def main():
     cfg = load(CONFIG, {})
     st = load(STATE, {})
 
+    def plain_shell(reason):
+        # Escape hatch: a NON-isolated shell that still carries the verified
+        # identity for the commit hooks (set by the administrator's fallback
+        # switch). Never used silently.
+        os.environ["GGW_SESSION_EMAIL"] = email
+        sys.stderr.write("\nGit Gateway: WARNING - %s\n"
+                         "  A NON-ISOLATED shell is opening (fallback is enabled "
+                         "in the panel).\n\n" % reason)
+        cmd = os.environ.get("SSH_ORIGINAL_COMMAND") or ""
+        if cmd:
+            os.execv("/bin/bash", ["bash", "-lc", cmd])
+        os.execv("/bin/bash", ["bash", "-l"])
+
     if not cfg.get("sandbox_enabled"):
         die("secure SSH sessions are switched OFF in the panel, but this key is\n"
             "  still bound to the launcher. Ask the administrator to either\n"
@@ -687,18 +701,27 @@ def main():
 
     if not BWRAP:
         if cfg.get("sandbox_allow_fallback"):
-            # Explicitly configured escape hatch: an unprotected shell, but the
-            # identity env still lets the commit hooks stamp/verify correctly.
-            os.environ["GGW_SESSION_EMAIL"] = email
-            sys.stderr.write("\nGit Gateway: WARNING - bubblewrap is missing, "
-                             "this session is NOT isolated (fallback is on).\n\n")
-            cmd = os.environ.get("SSH_ORIGINAL_COMMAND") or ""
-            if cmd:
-                os.execv("/bin/bash", ["bash", "-lc", cmd])
-            os.execv("/bin/bash", ["bash", "-l"])
+            plain_shell("bubblewrap is not installed on this server.")
         die("bubblewrap is not installed, so a secure session cannot start.\n"
             "  The administrator must run:  sudo apt install bubblewrap\n"
             "  then press 'Install / re-apply to all keys' in the panel.")
+
+    # Pre-flight: prove the kernel really allows unprivileged user namespaces
+    # BEFORE building the whole session. Some kernels/VPS containers refuse it
+    # (bwrap: setting up uid map: Permission denied) - fail loudly here, or
+    # fall back cleanly when the administrator allowed that.
+    test = subprocess.run([BWRAP, "--unshare-user", "--unshare-pid", "true"],
+                          capture_output=True, text=True, timeout=30)
+    if test.returncode != 0:
+        err = ((test.stderr or "").strip() or "unknown bwrap error").splitlines()[-1]
+        if cfg.get("sandbox_allow_fallback"):
+            plain_shell("user namespaces are blocked by this kernel (%s)" % err)
+        die("the kernel refuses user namespaces, so no isolated session can start:\n"
+            "  %s\n"
+            "  Ask the administrator to either\n"
+            "  - run on the host:  sysctl kernel.apparmor_restrict_unprivileged_userns\n"
+            "    (if 1 -> sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0),\n"
+            "  - or enable 'Allow non-isolated fallback' in the Git Gateway panel." % err)
 
     allowed = st.get("allowed", {}) or {}
     roots = [os.path.realpath(r) for r in (cfg.get("scan_roots") or
@@ -1709,6 +1732,26 @@ def ssh_toggle():
           "Secure SSH sessions DISABLED — %d key line(s) restored to normal "
           "shells (no launcher). Isolation is off, commits are still enforced "
           "by the hooks." % changed, "success" if enabled else "info")
+    return redirect(url_for("users"))
+
+
+@app.route("/ssh/fallback", methods=["POST"])
+@admin_required
+def ssh_fallback():
+    """Allow sandboxed keys to open a NON-isolated shell when the sandbox
+    itself is impossible (bubblewrap missing / kernel refuses namespaces).
+    Behaviour is read by the launcher at session start — no key rewrite."""
+    enabled = request.form.get("enabled") == "1"
+    cfg_set(sandbox_allow_fallback=enabled)
+    install_session_script()
+    if enabled:
+        flash("Fallback ALLOWED: sandboxed keys open a normal (non-isolated) "
+              "shell with a visible warning whenever the sandbox cannot run. "
+              "Commit permissions stay hook-enforced. Fix the sandbox cause as "
+              "soon as you can and turn this off.", "warning")
+    else:
+        flash("Fallback disallowed: sandboxed keys fail closed again when the "
+              "sandbox cannot run.", "info")
     return redirect(url_for("users"))
 
 

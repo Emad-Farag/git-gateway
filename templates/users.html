@@ -104,6 +104,14 @@ repository permission can never commit &mdash; the hook blocks it.</p>
         {{ 'Disable secure sessions' if sandbox.enabled else 'Enable secure sessions' }}
       </button>
     </form>
+    <form method="post" action="{{ url_for('ssh_fallback') }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="enabled" value="{{ '0' if sandbox.fallback else '1' }}">
+      <button class="btn {{ 'danger' if sandbox.fallback else 'ghost' }}"
+        title="When the sandbox cannot start (kernel refuses namespaces, bubblewrap missing), open a normal shell instead of refusing login">
+        {{ 'Disallow non-isolated fallback' if sandbox.fallback else 'Allow non-isolated fallback' }}
+      </button>
+    </form>
   </div>
   <p class="help">Grant applications per developer on the <a href="{{ url_for('permissions') }}">Permissions</a>
   page — that same list decides what their session can see. Turning the feature off

@@ -269,6 +269,13 @@ causes, in order of frequency:
 4. **Old launcher after a code update** → press *Install / re-apply to all
    keys* again (it rewrites `~/.gitgateway/ggw-session` with the current
    version).
+5. **The kernel itself refuses user namespaces** — typical on OpenVZ/LXC VPS
+   containers, even when bubblewrap is installed. Test on the server:
+   `unshare -Ur true && echo OK || echo BLOCKED`. If BLOCKED, the sandbox
+   cannot work in that environment. Until the host is fixed, press
+   **Allow non-isolated fallback** in the Secure SSH sessions card: sandboxed
+   keys then open a normal shell (with a warning banner) instead of being
+   refused, and commit permissions remain hook-enforced.
 
 Important: mode changes affect **new sessions only** — disconnect and reconnect
 after changing anything. As a last resort, *Allow full shell* for the affected
