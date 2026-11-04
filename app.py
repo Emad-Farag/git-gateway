@@ -671,22 +671,35 @@ def slug(email):
 
 def main():
     if len(sys.argv) < 2:
-        die("session identity missing — press 'Apply secure modes to keys' in the panel.")
+        die("session identity missing - press 'Install / re-apply to all keys' "
+            "in the panel (Users & Keys).")
     email = sys.argv[1].strip().lower()
     if "@" not in email or "/" in email or len(email) > 200:
         die("invalid session identity")
     cfg = load(CONFIG, {})
+    st = load(STATE, {})
+
     if not cfg.get("sandbox_enabled"):
-        die("secure SSH sessions are disabled in the panel (Users & Keys).")
+        die("secure SSH sessions are switched OFF in the panel, but this key is\n"
+            "  still bound to the launcher. Ask the administrator to either\n"
+            "  - enable 'Secure SSH sessions' in Users & Keys, or\n"
+            "  - set this key back to 'Full shell'.")
+
     if not BWRAP:
         if cfg.get("sandbox_allow_fallback"):
+            # Explicitly configured escape hatch: an unprotected shell, but the
+            # identity env still lets the commit hooks stamp/verify correctly.
             os.environ["GGW_SESSION_EMAIL"] = email
-            die("bubblewrap missing — fallback would be an unprotected shell; "
-                "install it with: sudo apt install bubblewrap")
+            sys.stderr.write("\nGit Gateway: WARNING - bubblewrap is missing, "
+                             "this session is NOT isolated (fallback is on).\n\n")
+            cmd = os.environ.get("SSH_ORIGINAL_COMMAND") or ""
+            if cmd:
+                os.execv("/bin/bash", ["bash", "-lc", cmd])
+            os.execv("/bin/bash", ["bash", "-l"])
         die("bubblewrap is not installed, so a secure session cannot start.\n"
-            "  sudo apt install bubblewrap\n"
-            "Then reload the panel and press 'Apply secure modes to keys'.")
-    st = load(STATE, {})
+            "  The administrator must run:  sudo apt install bubblewrap\n"
+            "  then press 'Install / re-apply to all keys' in the panel.")
+
     allowed = st.get("allowed", {}) or {}
     roots = [os.path.realpath(r) for r in (cfg.get("scan_roots") or
              [os.path.join(HOME, "frappe-bench", "apps")])]
@@ -702,13 +715,13 @@ def main():
         apps[os.path.basename(path.rstrip("/"))] = real
     apps = sorted(apps.items())
 
-    # writable per-developer home (holds ~/.vscode-server and the app mounts)
-    ws = os.path.join(WORK, slug(email))
-    os.makedirs(os.path.join(ws, "frappe-bench", "apps"), exist_ok=True)
-
     name = (st.get("display_names") or {}).get(email) or \
         email.split("@")[0].replace(".", " ").replace("_", " ").replace("-", " ").title()
     name = name.replace('"', "").replace("\\", "")
+
+    # writable per-developer home (holds ~/.vscode-server and the app mounts)
+    ws = os.path.join(WORK, slug(email))
+    os.makedirs(os.path.join(ws, "frappe-bench", "apps"), exist_ok=True)
 
     # identity file for the commit hooks: bound read-only at /run/ggw/session.env
     os.makedirs(SESSIONS, exist_ok=True)
@@ -719,6 +732,8 @@ def main():
     os.chmod(env_path, 0o600)
 
     user = os.environ.get("USER") or os.path.basename(HOME)
+    # bwrap requires every bind TARGET to exist inside the namespace first,
+    # so each mount point gets an explicit --dir BEFORE its --bind.
     argv = [BWRAP, "--unshare-user", "--unshare-pid", "--unshare-uts",
             "--unshare-ipc", "--die-with-parent", "--new-session",
             "--ro-bind", "/usr", "/usr",
@@ -726,16 +741,18 @@ def main():
             "--symlink", "usr/sbin", "/sbin",
             "--symlink", "usr/lib", "/lib",
             "--symlink", "usr/lib64", "/lib64",
-            "--dir", "/home",
-            "--bind", ws, HOME,
             "--ro-bind", "/etc", "/etc",
             "--ro-bind-try", "/opt", "/opt",
             "--proc", "/proc", "--dev", "/dev",
             "--tmpfs", "/dev/shm", "--tmpfs", "/tmp", "--tmpfs", "/run",
+            "--dir", "/home",
+            "--dir", HOME,
+            "--bind", ws, HOME,
             "--dir", "/run/ggw",
             "--ro-bind", env_path, "/run/ggw/session.env"]
     for app_name, app_path in apps:
-        argv += ["--bind", app_path, HOME + "/frappe-bench/apps/" + app_name]
+        argv += ["--dir", HOME + "/frappe-bench/apps/" + app_name,
+                 "--bind", app_path, HOME + "/frappe-bench/apps/" + app_name]
     sock = os.environ.get("SSH_AUTH_SOCK")
     if sock and os.path.exists(sock):
         argv += ["--bind", sock, "/run/ggw/agent.sock",
@@ -756,7 +773,13 @@ def main():
         argv += ["--", "bash", "-lc", cmd]      # VS Code Remote-SSH bootstrapping
     else:
         argv += ["--", "bash", "-l"]
-    os.execv(BWRAP, argv)
+    try:
+        os.execv(BWRAP, argv)
+    except Exception as e:
+        die("could not start the isolated session: %s\n"
+            "  Check 'journalctl -u ssh' for the bwrap error (on Ubuntu 24.04\n"
+            "  AppArmor may need: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0)"
+            % e)
 
 
 if __name__ == "__main__":
@@ -780,7 +803,16 @@ def sandbox_status():
         userns = open("/proc/sys/kernel/unprivileged_userns_clone").read().strip() != "0"
     except Exception:
         pass                     # sysctl absent → user namespaces allowed by default
-    return {"bwrap": bwrap, "userns": userns,
+    apparmor = False
+    try:
+        # Ubuntu 24.04+: 1 means unprivileged user namespaces are restricted by
+        # AppArmor — bwrap from apt ships a profile that still works, but a
+        # hand-built bwrap would fail with "Operation not permitted".
+        apparmor = open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+                        ).read().strip() == "1"
+    except Exception:
+        pass
+    return {"bwrap": bwrap, "userns": userns, "apparmor": apparmor,
             "script": os.path.isfile(SESSION_SH),
             "enabled": bool(cfg_get("sandbox_enabled")),
             "fallback": bool(cfg_get("sandbox_allow_fallback"))}
@@ -924,7 +956,11 @@ def sync_authorized_key_modes(force_plain=False):
         emails = [e.lower() for e in EMAIL_RE.findall(s)]
         email = emails[0] if emails else ""
         base = _strip_our_command(opts)
-        if (not force_plain) and email and ssh_mode_of(email) == "sandbox":
+        # The launcher is written into authorized_keys ONLY while the feature
+        # is enabled — a paused/misconfigured feature must never leave a key
+        # pointing at a launcher that refuses to start.
+        if (not force_plain) and bool(cfg_get("sandbox_enabled")) and \
+                email and ssh_mode_of(email) == "sandbox":
             new_opts = (base + "," if base else "") + _sandbox_option(email)
         else:
             new_opts = base
@@ -1588,16 +1624,37 @@ def ssh_mode():
     modes = dict(cfg_get("ssh_modes") or {})
     modes[email] = mode
     cfg_set(ssh_modes=modes)
+    if mode == "sandbox":
+        ready = sandbox_status()
+        if not (ready["bwrap"] and ready["userns"]):
+            # Never knowingly strand a key on a launcher that cannot start.
+            modes[email] = "full"
+            cfg_set(ssh_modes=modes)
+            sync_authorized_key_modes()
+            flash("Cannot sandbox %s yet: %s The key keeps its normal shell for "
+                  "now. Fix the problem first — when 'Secure SSH sessions' shows "
+                  "Enabled, press Sandbox it again."
+                  % (email, "bubblewrap is not installed (sudo apt install "
+                     "bubblewrap)." if not ready["bwrap"] else
+                     "unprivileged user namespaces are disabled in the kernel."),
+                  "error")
+            return redirect(url_for("users"))
+        if not ready["enabled"]:
+            install_session_script()
+            cfg_set(sandbox_enabled=True)
+            flash("Secure SSH sessions were not switched on yet — enabled them "
+                  "automatically now.", "info")
     changed = sync_authorized_key_modes()
     if mode == "sandbox":
         flash("%s now gets a SECURE SSH session: only its granted applications "
               "are visible, the rest of the server is hidden by the kernel "
-              "(authorized_keys updated%s)." %
-              (email, ", %d key line(s) rewritten" % changed if changed else ""),
+              "(authorized_keys updated%s). Reconnect to use it."
+              % (email, ", %d key line(s) rewritten" % changed if changed else ""),
               "success")
     else:
         flash("%s now gets a FULL login shell (no sandbox). Only give this to "
-              "the server administrator." % email, "warning")
+              "the server administrator. Takes effect on new sessions."
+              % email, "warning")
     return redirect(url_for("users"))
 
 
@@ -1606,15 +1663,22 @@ def ssh_mode():
 def ssh_apply():
     """Install the session script and (re)write every sandboxed key line."""
     install_session_script()
-    changed = sync_authorized_key_modes()
+    enabled = bool(cfg_get("sandbox_enabled"))
+    changed = sync_authorized_key_modes() if enabled else \
+        sync_authorized_key_modes(force_plain=True)
     ready = sandbox_status()
     if not ready["bwrap"]:
         flash("Session script written, but bubblewrap is NOT installed on this "
               "server — sandboxed keys cannot connect until you run "
               "'sudo apt install bubblewrap'.", "error")
+    elif not enabled:
+        flash("Session launcher updated, but Secure SSH sessions are OFF — "
+              "all keys were left on normal shells. Press 'Enable secure "
+              "sessions' to switch them over.", "info")
     else:
         flash("Session script installed; %d authorized_keys line(s) updated. "
-              "New SSH sessions are isolated per key." % changed, "success")
+              "New SSH sessions are isolated per key (existing ones must reconnect)."
+              % changed, "success")
     return redirect(url_for("users"))
 
 

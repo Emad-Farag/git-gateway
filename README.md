@@ -251,6 +251,29 @@ your sudo password once when run from a terminal); in a non-interactive shell
 it prints the two exact commands to run instead. The Settings page then
 switches from "helper not installed" to showing the effective SSH policy.
 
+## Troubleshooting: a sandboxed key cannot connect
+
+A sandboxed key runs a forced command; when that launcher cannot start, SSH
+closes the session immediately and prints the exact reason on screen. The
+causes, in order of frequency:
+
+1. **The feature is off, but the key already carries the launcher.** Press
+   *Enable secure sessions* in Users & Keys — or press *Allow full shell* for
+   that user to get the normal shell back. (Newer versions never write the
+   launcher unless the feature is ready.)
+2. **bubblewrap missing** → `sudo apt install bubblewrap`, then
+   *Install / re-apply to all keys* in the panel.
+3. **Kernel/AppArmor restriction** (Ubuntu 24.04+) → install bubblewrap from
+   `apt` (it ships a working AppArmor profile). If you built it manually:
+   `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.
+4. **Old launcher after a code update** → press *Install / re-apply to all
+   keys* again (it rewrites `~/.gitgateway/ggw-session` with the current
+   version).
+
+Important: mode changes affect **new sessions only** — disconnect and reconnect
+after changing anything. As a last resort, *Allow full shell* for the affected
+e-mail, or *Disable secure sessions* (resets EVERY key to a normal shell).
+
 ## Uninstall
 
 ```bash

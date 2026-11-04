@@ -17,7 +17,10 @@
 set -u
 
 CONF_DIR="/etc/ssh/sshd_config.d"
-CONF="$CONF_DIR/99-git-gateway-hardening.conf"
+# 00- prefix: sshd keeps the FIRST value it reads, so this file must sort
+# BEFORE distro/cloud-init drop-ins such as 50-cloud-init.conf.
+CONF="$CONF_DIR/00-git-gateway-hardening.conf"
+LEGACY_CONF="$CONF_DIR/99-git-gateway-hardening.conf"
 SSHD_CONFIG="/etc/ssh/sshd_config"
 SSHD_BIN="$(command -v sshd 2>/dev/null || true)"
 [ -n "$SSHD_BIN" ] || SSHD_BIN="/usr/sbin/sshd"
@@ -89,9 +92,10 @@ status () {
 
 disable_password () {
   ensure_include
-  local backup=""
-  [ -f "$CONF" ] && backup="$(mktemp)"
-  [ -n "$backup" ] && cp -a "$CONF" "$backup"
+  local backup="" legacy_backup=""
+  if [ -f "$CONF" ]; then backup="$(mktemp)"; cp -a "$CONF" "$backup"; fi
+  if [ -f "$LEGACY_CONF" ]; then legacy_backup="$(mktemp)"; cp -a "$LEGACY_CONF" "$legacy_backup"; fi
+  rm -f "$LEGACY_CONF"
   cat > "$CONF" <<'EOF'
 # Installed by Git Gateway - SSH password logins disabled (keys only).
 # Remove this file (or press "Allow password logins" in the panel) to undo.
@@ -102,12 +106,15 @@ EOF
   if ! check_config; then
     rm -f "$CONF"
     [ -n "$backup" ] && cp -a "$backup" "$CONF"
+    [ -n "$legacy_backup" ] && cp -a "$legacy_backup" "$LEGACY_CONF"
     [ -n "$backup" ] && rm -f "$backup"
+    [ -n "$legacy_backup" ] && rm -f "$legacy_backup"
     kv ok no
     kv error "sshd rejected the new configuration - previous state restored."
     exit 1
   fi
   [ -n "$backup" ] && rm -f "$backup"
+  [ -n "$legacy_backup" ] && rm -f "$legacy_backup"
   local eff
   eff="$(sshd_effective PasswordAuthentication)"
   if [ "$eff" != "no" ]; then
@@ -123,7 +130,9 @@ EOF
   kv ok yes
 }
 
-enable_password () {  ensure_include
+enable_password () {
+  ensure_include
+  rm -f "$LEGACY_CONF"
   cat > "$CONF" <<'EOF'
 # Installed by Git Gateway - SSH password logins allowed again.
 # Keep keys-only for maximum safety: press "Disable password logins".

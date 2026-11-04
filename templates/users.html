@@ -74,7 +74,17 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     <li>bubblewrap: {% if sandbox.bwrap %}<span class="badge b-ok">installed</span>{% else %}<span class="badge b-err">missing</span> — <code>sudo apt install bubblewrap</code>{% endif %}</li>
     <li>user namespaces: {% if sandbox.userns %}<span class="badge b-ok">available</span>{% else %}<span class="badge b-err">disabled</span>{% endif %}</li>
     <li>session launcher: {% if sandbox.script %}<span class="badge b-ok">installed</span>{% else %}<span class="badge b-warn">not installed</span>{% endif %}</li>
+    {% if sandbox.apparmor %}<li>Ubuntu AppArmor restricts unprivileged namespaces on this kernel —
+    bubblewrap from <code>apt</code> includes a working profile; if a sandboxed session still
+    fails with <i>Operation not permitted</i>, run
+    <code>sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0</code></li>{% endif %}
   </ul>
+  {% if not sandbox.enabled %}
+  <p class="help"><span class="badge b-warn">note</span> The feature is currently <b>off</b>.
+  Pressing <b>Sandbox it</b> on a user turns it on automatically (after checking bubblewrap
+  and namespaces) and rewrites their key line — so a sandboxed key is never left pointing at
+  a launcher that cannot start.</p>
+  {% endif %}
   {% if sandbox.enabled and insecure_keys %}
   <p class="help"><span class="badge b-warn">attention</span>
   {{ insecure_keys }} key line(s) are NOT sandboxed (no launcher yet — added
@@ -96,8 +106,8 @@ repository permission can never commit &mdash; the hook blocks it.</p>
     </form>
   </div>
   <p class="help">Grant applications per developer on the <a href="{{ url_for('permissions') }}">Permissions</a>
-  page — that same list decides what their session can see. While disabled, sandboxed
-  keys cannot connect at all (fail closed).</p>
+  page — that same list decides what their session can see. Turning the feature off
+  restores a normal shell on every key.</p>
   <details>
     <summary class="cursor">How the isolation works (and its honest limits)</summary>
     <p class="help">The launcher is a forced command on each key; the e-mail is read from the key
